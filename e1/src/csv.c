@@ -1,4 +1,4 @@
-#include "csv.h"
+#include "../include/csv.h"
 
 FILE* csv_open(const char* path, int write_header) {
     FILE* f = fopen(path, "w");

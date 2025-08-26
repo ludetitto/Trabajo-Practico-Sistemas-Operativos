@@ -1,4 +1,4 @@
-#include "randrec.h"
+#include "../include/randrec.h"
 
 static const char* NAMES[] = {
     "Luis","Marta","Juan","Sofia","Pedro","Ana","Diego","Clara","Beta","Omega","Kappa","Alpha","Gamma","Delta","Lambda"
