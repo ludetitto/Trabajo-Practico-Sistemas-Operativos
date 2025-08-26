@@ -1,6 +1,6 @@
-#include "common.h"
-#include "ipc.h"
-#include "csv.h"
+#include "../include/common.h"
+#include "../include/ipc.h"
+#include "../include/csv.h"
 
 static volatile sig_atomic_t stop = 0;
 static void on_sig(int s){ (void)s; stop = 1; }

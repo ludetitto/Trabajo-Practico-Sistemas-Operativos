@@ -1,4 +1,4 @@
-#include "proto.h"
+#include "../include/proto.h"
 
 int parse_kv_int(const char* token, const char* key, int* out){
   size_t klen=strlen(key);

@@ -1,4 +1,4 @@
-#include "ipc.h"
+#include "../include/ipc.h"
 
 ring_t*      g_ring = NULL;
 ids_state_t* g_ids  = NULL;

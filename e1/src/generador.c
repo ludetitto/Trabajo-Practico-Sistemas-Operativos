@@ -1,6 +1,6 @@
-#include "common.h"
-#include "ipc.h"
-#include "randrec.h"
+#include "../include/common.h"
+#include "../include/ipc.h"
+#include "../include/randrec.h"
 
 static void usage(const char* prog){
     fprintf(stderr,"Uso: %s -q <cantidad_por_generador> -g <idx>\n", prog);
