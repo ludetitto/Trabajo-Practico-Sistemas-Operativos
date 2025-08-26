@@ -1,0 +1,8 @@
+# binarios y objetos
+/e1/bin/*
+/e1/obj/*
+# archivos de prueba
+/e1/*.csv
+# backups temporales
+*~
+*.swp
