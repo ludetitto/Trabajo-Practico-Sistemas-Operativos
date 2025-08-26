@@ -1,24 +1,32 @@
-# Nombre del ejecutable
-TARGET = ej1 
+# Makefile – Ejercicio 1 (mejorado)
 
-# Archivo fuente
-SRC = ej1.c
+CC       ?= gcc
+TARGET    = ej1
+SRC       = ej1.c
 
-# Flags de compilación
-CFLAGS = -Wall -pthread -lrt
+CFLAGS   := -O2 -Wall -Wextra -std=c11
+LDFLAGS  := -pthread
+# Si tu distro requiere librt para clock_gettime/sem_timedwait, descomentá:
+# LDFLAGS  += -lrt
 
-# Default: compila todo
+.PHONY: all run demo validate clean
+
 all: $(TARGET)
 
-# Regla para compilar
 $(TARGET): $(SRC)
-	gcc $(SRC) -o $(TARGET) $(CFLAGS)
+	$(CC) $(SRC) -o $(TARGET) $(CFLAGS) $(LDFLAGS)
 
-# Ejecutar el programa (ejemplo 3 generadores, 50 registros)
-run: $(TARGET)
-	./$(TARGET) 3 50
+# Ejecución de ejemplo (3 generadores, 100 registros, sin delay)
+run: all
+	./$(TARGET) -n 3 -t 100 -f registros.csv -d 0
 
-# Limpiar ejecutables y archivos temporales
+# Demo completa (compila → corre → valida) usando scripts/
+demo: all
+	./scripts/run_demo.sh
+
+# Validador AWK sobre registros.csv (requiere scripts/awk_idcheck.awk)
+validate:
+	awk -f scripts/awk_idcheck.awk registros.csv
+
 clean:
 	rm -f $(TARGET) registros.csv
-
