@@ -26,6 +26,8 @@
 
 typedef struct {
     int id;
+    int gen;                 // NUEVO: número de generador (0..N-1)
+    pid_t pid;               // NUEVO: PID del proceso generador
     char name[MAX_NAME];
 } registro;
 
@@ -88,8 +90,7 @@ static void sleep_ms(int ms){
 static void generar_nombre(char *name) {
     static const char *nombres[] = {"Ana","Juan","Luis","Marta","Pedro","Sofia","Diego","Clara"};
     int idx = rand() % 8;
-    /* snprintf evita warning de truncación y garantiza terminación */
-    snprintf(name, MAX_NAME, "%s", nombres[idx]);
+    snprintf(name, MAX_NAME, "%s", nombres[idx]);  // seguro y sin warning
 }
 
 /* ---- Ayuda CLI ---- */
@@ -125,8 +126,9 @@ int main(int argc, char *argv[]) {
     atexit(cleanup_all);
 
     /* SHM control */
-    fd_ctrl = shm_open(SHM_CONTROL, O_CREAT|O_RDWR, 0666);
-    if (fd_ctrl<0){ perror("shm_open control"); return 1; }
+    int fd_ctrl_local = shm_open(SHM_CONTROL, O_CREAT|O_RDWR, 0666);
+    if (fd_ctrl_local<0){ perror("shm_open control"); return 1; }
+    fd_ctrl = fd_ctrl_local;
     if (ftruncate(fd_ctrl, sizeof(control_shm))<0){ perror("ftruncate control"); return 1; }
     ctrl = mmap(NULL, sizeof(control_shm), PROT_READ|PROT_WRITE, MAP_SHARED, fd_ctrl, 0);
     if (ctrl==MAP_FAILED){ perror("mmap control"); return 1; }
@@ -134,8 +136,9 @@ int main(int argc, char *argv[]) {
     ctrl->max_id  = TOTAL;
 
     /* SHM cola */
-    fd_cola = shm_open(SHM_COLA, O_CREAT|O_RDWR, 0666);
-    if (fd_cola<0){ perror("shm_open cola"); return 1; }
+    int fd_cola_local = shm_open(SHM_COLA, O_CREAT|O_RDWR, 0666);
+    if (fd_cola_local<0){ perror("shm_open cola"); return 1; }
+    fd_cola = fd_cola_local;
     if (ftruncate(fd_cola, sizeof(cola_shm))<0){ perror("ftruncate cola"); return 1; }
     cola = mmap(NULL, sizeof(cola_shm), PROT_READ|PROT_WRITE, MAP_SHARED, fd_cola, 0);
     if (cola==MAP_FAILED){ perror("mmap cola"); return 1; }
@@ -155,7 +158,10 @@ int main(int argc, char *argv[]) {
         pid_t pid = fork();
         if (pid<0){ perror("fork"); return 1; }
         if(pid==0) {
+            /* ---- Hijo: generador i ---- */
+            const int gen_id = i;       // número de generador (0..N-1)
             srand(getpid());
+
             for(;;){
                 if (stop_requested) _exit(0);
 
@@ -163,7 +169,7 @@ int main(int argc, char *argv[]) {
 
                 /* Pedir bloque de 10 IDs */
                 int rc = wait_with_timeout(mutex_id, 2000);
-                if (rc==1){ fprintf(stderr,"[gen] timeout mutex_id\n"); _exit(2); }
+                if (rc==1){ fprintf(stderr,"[gen%d] timeout mutex_id\n", gen_id); _exit(2); }
                 if (rc<0){ perror("sem_timedwait(mutex_id)"); _exit(2); }
 
                 if (ctrl->next_id > ctrl->max_id){
@@ -181,14 +187,18 @@ int main(int argc, char *argv[]) {
                 for(int id=start; id<=end; id++) {
                     if (stop_requested) _exit(0);
 
-                    registro reg; reg.id = id; generar_nombre(reg.name);
+                    registro reg;
+                    reg.id  = id;
+                    reg.gen = gen_id;        // NUEVO
+                    reg.pid = getpid();      // NUEVO
+                    generar_nombre(reg.name);
 
                     rc = wait_with_timeout(sem_empty, 2000);
-                    if (rc==1){ fprintf(stderr,"[gen] timeout sem_empty\n"); _exit(2); }
+                    if (rc==1){ fprintf(stderr,"[gen%d] timeout sem_empty\n", gen_id); _exit(2); }
                     if (rc<0){ perror("sem_timedwait(sem_empty)"); _exit(2); }
 
                     rc = wait_with_timeout(mutex_buffer, 2000);
-                    if (rc==1){ fprintf(stderr,"[gen] timeout mutex_buffer\n"); _exit(2); }
+                    if (rc==1){ fprintf(stderr,"[gen%d] timeout mutex_buffer\n", gen_id); _exit(2); }
                     if (rc<0){ perror("sem_timedwait(mutex_buffer)"); _exit(2); }
 
                     cola->buffer[cola->tail] = reg;
@@ -207,7 +217,7 @@ int main(int argc, char *argv[]) {
     /* Padre = coordinador: abrir CSV y consumir */
     FILE *csv = fopen(CSV, "w");
     if(!csv) { perror("CSV"); return 1; }
-    fprintf(csv, "id,Nombre\n");
+    fprintf(csv, "id,generador,pid,Nombre\n");    // ENCABEZADO actualizado
 
     int escritos = 0;
     while(escritos < TOTAL && !stop_requested) {
@@ -217,8 +227,8 @@ int main(int argc, char *argv[]) {
             int status; int vivos = 0;
             for(int i=0;i<N;i++){
                 pid_t r = waitpid(-1, &status, WNOHANG);
-                if (r==0) { vivos=1; break; }           /* alguno sigue vivo */
-                if (r>0) continue;                      /* reaped uno */
+                if (r==0) { vivos=1; break; }                /* alguno sigue vivo */
+                if (r>0) continue;                           /* reaped uno */
                 if (r<0 && errno==ECHILD){ vivos=0; break; } /* no quedan hijos */
             }
             if (!vivos) break;
@@ -234,7 +244,8 @@ int main(int argc, char *argv[]) {
         sem_post(mutex_buffer);
         sem_post(sem_empty);
 
-        fprintf(csv, "%d,%s\n", reg.id, reg.name);
+        /* Escritura con columnas nuevas */
+        fprintf(csv, "%d,%d,%d,%s\n", reg.id, reg.gen, (int)reg.pid, reg.name);
         escritos++;
     }
 
