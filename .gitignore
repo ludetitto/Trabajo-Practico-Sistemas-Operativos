@@ -1,10 +1,50 @@
-# binarios y objetos
+# ==========================
+# Build artifacts
+# ==========================
+# Ejecutables y objetos en cualquier subcarpeta
+**/bin/
+**/obj/
 
-/Ejercicio1/bin/*
+# Archivos intermedios de compilación
+*.o
+*.out
+*.exe
 
-/Ejercicio1/obj/*
-# archivos de prueba
-/Ejercicio1/*.csv
-# backups temporales
+# ==========================
+# Archivos de datos temporales
+# ==========================
+# CSV generados en ejecuciones
+**/*.csv
+
+# Logs, dumps y demás temporales
+*.log
+*.tmp
+*.bak
+
+# ==========================
+# Editor/IDE
+# ==========================
+# Archivos de respaldo y swap
 *~
 *.swp
+*.swo
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Code::Blocks
+*.depend
+*.layout
+*.cbp
+
+# ==========================
+# Sistema / OS
+# ==========================
+.DS_Store
+Thumbs.db
+
+# ==========================
+# Archivos comprimidos de entrega
+# ==========================
+*.zip
