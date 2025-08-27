@@ -8,7 +8,7 @@ static void db_reserve(db_t* db, size_t need){
   db->v=nv; db->cap=nc;
 }
 
-int db_load(const char* path, db_t* db){
+int db_load(const char* path, db_t* db){ // cargar CSV en memoria
   memset(db,0,sizeof(*db));
   FILE* f = fopen(path,"r");
   if(!f) return -1;
@@ -34,11 +34,11 @@ int db_load(const char* path, db_t* db){
   return 0;
 }
 
-void db_free(db_t* db){
+void db_free(db_t* db){ // liberar memoria
   free(db->v); memset(db,0,sizeof(*db));
 }
 
-int db_write_atomic(const char* path, const db_t* db){
+int db_write_atomic(const char* path, const db_t* db){ // guardar CSV desde memoria
   char tmp[512]; snprintf(tmp,sizeof(tmp),"%s.tmp",path);
   FILE* f = fopen(tmp,"w"); if(!f) return -1;
   fprintf(f,"id,generador,pid,Nombre\n");
@@ -51,17 +51,17 @@ int db_write_atomic(const char* path, const db_t* db){
   return 0;
 }
 
-int db_max_id(const db_t* db){
+int db_max_id(const db_t* db){ // máximo id en la base
   int mx=0; for(size_t i=0;i<db->len;i++) if(db->v[i].id>mx) mx=db->v[i].id;
   return mx;
 }
 
-int db_find_by_id(const db_t* db, int id, row_t* out){
+int db_find_by_id(const db_t* db, int id, row_t* out){ // buscar por id
   for(size_t i=0;i<db->len;i++) if(db->v[i].id==id){ if(out)*out=db->v[i]; return 0; }
   return -1;
 }
 
-int db_find_by_nombre(const db_t* db, const char* nombre, row_t** out_list, size_t* out_n){
+int db_find_by_nombre(const db_t* db, const char* nombre, row_t** out_list, size_t* out_n){ // buscar por nombre
   size_t cap=0, len=0; row_t* buf=NULL;
   for(size_t i=0;i<db->len;i++){
     if(strncmp(db->v[i].nombre, nombre, NAME_MAXLEN)==0){
@@ -72,13 +72,13 @@ int db_find_by_nombre(const db_t* db, const char* nombre, row_t** out_list, size
   *out_list=buf; *out_n=len; return 0;
 }
 
-int db_add(db_t* db, const row_t* r){
+int db_add(db_t* db, const row_t* r){ // agregar fila
   db_reserve(db, db->len+1);
   db->v[db->len++]=*r;
   return 0;
 }
 
-int db_update(db_t* db, int id, const row_t* patch){
+int db_update(db_t* db, int id, const row_t* patch){ // actualizar fila (patch)
   for(size_t i=0;i<db->len;i++){
     if(db->v[i].id==id){
       if(patch->generador>=0) db->v[i].generador=patch->generador;
@@ -90,7 +90,7 @@ int db_update(db_t* db, int id, const row_t* patch){
   return -1;
 }
 
-int db_delete(db_t* db, int id){
+int db_delete(db_t* db, int id){ // borrar fila
   for(size_t i=0;i<db->len;i++){
     if(db->v[i].id==id){
       db->v[i]=db->v[db->len-1];

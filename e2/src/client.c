@@ -27,7 +27,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  int s = socket(AF_INET, SOCK_STREAM, 0);
+  int s = socket(AF_INET, SOCK_STREAM, 0); // socket TCP
   if (s < 0)
     die("socket");
   struct sockaddr_in a = {0};
@@ -35,12 +35,12 @@ int main(int argc, char **argv)
   a.sin_port = htons(port);
   if (inet_pton(AF_INET, host, &a.sin_addr) <= 0)
     die("host");
-  if (connect(s, (struct sockaddr *)&a, sizeof(a)) < 0)
+  if (connect(s, (struct sockaddr *)&a, sizeof(a)) < 0) // conectar
     die("connect");
-  FILE *io = fdopen(s, "r+");
+  FILE *io = fdopen(s, "r+"); // stream para leer/escribir
   if (!io)
     die("fdopen");
-  setvbuf(io, NULL, _IOLBF, 0);
+  setvbuf(io, NULL, _IOLBF, 0); // buffer de línea
 
   printf("Conectado a %s:%d. Comandos: PING | GET <id> | FIND nombre=VAL | BEGIN | ADD nombre=.. generador=.. pid=.. | UPDATE id=.. [..] | DELETE id=.. | COMMIT | ROLLBACK | QUIT\n", host, port);
 
