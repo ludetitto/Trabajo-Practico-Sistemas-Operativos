@@ -31,14 +31,13 @@ int main(int argc, char** argv){
         uint32_t base = 0, cont = 0;
         int no_disponible = pedir_bloque_ids(&base, &cont); // pido un bloque de IDs
         
-        if (no_disponible) 
-            break; // ya no quedan IDs globalmente
-
-        for (uint32_t i=0; i < cont && cant_producida < cant_a_producir ;i++){ // para cada ID del bloque
-            registro_t r;
-            generar_randrec(&r, base + i, idx_generador); // genero un registro aleatorio
-            push(&r); // lo pongo en el buffer circular (bloquea si está lleno)
-            cant_producida++;
+        if (!no_disponible) {
+            for (uint32_t i=0; i < cont && cant_producida < cant_a_producir ;i++){ // para cada ID del bloque
+                registro_t r;
+                generar_randrec(&r, base + i, idx_generador); // genero un registro aleatorio
+                push(&r); // lo pongo en el buffer circular (bloquea si está lleno)
+                cant_producida++;
+            }
         }
     }
 
