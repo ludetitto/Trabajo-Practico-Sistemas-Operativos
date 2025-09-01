@@ -4,8 +4,8 @@
 #include "common.h"
 
 // punteros globales a segmentos compartidos
-extern ring_t*      g_ring;
-extern ids_state_t* g_ids;
+extern cola_t*      cola;
+extern ids_t*       ids_estado;
 
 // semáforos globales
 extern sem_t* sem_empty;
@@ -13,15 +13,15 @@ extern sem_t* sem_full;
 extern sem_t* sem_mutex;
 extern sem_t* sem_ids;
 
-// init / close
-int  ipc_open_all(int create, uint32_t total_ids);
-void ipc_close_all(int unlink_now);
+// Abrir y cerrar todos los IPCs
+int  ipc_abrir_todos(int crear, uint32_t total_ids);
+void ipc_cerrar_todos(int borrar_ahora);
 
-// ring ops
-void ring_push(const record_t* r);
-int  ring_pop(record_t* out);
+// Primitivas de cola
+void push(const registro_t* r);
+int  pop(registro_t* r);
 
-// ids ops (bloque de 10 máximo)
-int  ids_take_block(uint32_t* base, uint32_t* count);
+// Operaciones sobre IDs
+int  pedir_bloque_ids(uint32_t* base, uint32_t* cant);
 
 #endif

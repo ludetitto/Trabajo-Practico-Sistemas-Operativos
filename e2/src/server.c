@@ -7,10 +7,10 @@ typedef struct
   const char *csv_path;
   int tx_active;       // 0/1 si hay transaccion activa (¿Hay transacción en curso?)
   pthread_t tx_owner;  // thread owner de la tx (¿Quién inició la transacción?)
-  int tx_fd;           // fd con WRLCK durante la tx (¿Qué archivo está bloqueado?)
+  int tx_fd;           // file descriptor con write lock durante la tx (¿Qué archivo está bloqueado?)
   db_t tx_db_snapshot; // snapshot en memoria mientras dura la tx (¿Qué datos tiene la transacción?)
   pthread_mutex_t m;
-} tx_state_t; // estado global del servidor
+} tx_state_t; // estado global de la transacción del servidor
 
 typedef struct
 {
@@ -48,6 +48,7 @@ static int unlock_exclusive(int fd) // unlock
 {
   struct flock fl = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0}; // unlock desde el inicio hasta el final del archivo
   return fcntl(fd, F_SETLK, &fl); // intenta liberar el lock
+  // fcntl es una función que realiza operaciones en un descriptor de archivo
 }
 
 static void *client_thread(void *arg) // hilo por cliente
@@ -65,6 +66,8 @@ static void *client_thread(void *arg) // hilo por cliente
     return NULL;
   }
   setvbuf(io, NULL, _IOLBF, 0); // establece el buffer de línea para la comunicación con el cliente
+  // setvbuf es una función que establece el modo de buffering de un flujo de E/S
+  // _IOLBF significa que el buffer se vacía cuando se encuentra un salto de línea
 
   pthread_mutex_lock(&G_CONN_M); // P
   G_CONN_COUNT++; // contador de conexiones activas (debug)
@@ -72,10 +75,8 @@ static void *client_thread(void *arg) // hilo por cliente
 
   char line[LINE_MAX];
   int my_is_owner = 0;
-  for (;;) // esperar comandos del cliente
+  while(fgets(line, sizeof(line), io))
   {
-    if (!fgets(line, sizeof(line), io))
-      break; // desconexión
     trim_nl(line);
     if (line[0] == 0)
     {

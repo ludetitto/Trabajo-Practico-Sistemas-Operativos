@@ -2,7 +2,7 @@
 #define RANDREC_H
 #include "common.h"
 
-void randrec_seed(void);
-void randrec_make(record_t* r, uint32_t id, int gen_idx);
+void semilla_randrec(void);
+void generar_randrec(registro_t* r, uint32_t id, int generar_idx);
 
 #endif
