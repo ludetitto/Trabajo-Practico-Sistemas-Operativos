@@ -2,8 +2,8 @@
 #define CSV_H
 #include "common.h"
 
-FILE* csv_open(const char* path, int write_header);
-void  csv_write(FILE* f, const record_t* r);
-void  csv_close(FILE* f);
+FILE* abrir_csv(const char* path, int write_header);
+void  escribir_csv(FILE* f, const registro_t* r);
+void  cerrar_csv(FILE* f);
 
 #endif
