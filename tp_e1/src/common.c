@@ -1,11 +1,10 @@
 // src/common.c
 // -----------------------------------------------------------------------------
-// Implementación de utilidades comunes declaradas en common.h
+// Utilidades comunes: errores, RNG, generación de registros y nombres POSIX.
 // -----------------------------------------------------------------------------
 
 #include "common.h"
 
-// Mensaje de error con formato + exit
 void die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -14,13 +13,11 @@ void die(const char *fmt, ...) {
     exit(EXIT_FAILURE);
 }
 
-// perror + exit (para errores de syscalls)
 void perr(const char *msg) {
     perror(msg);
-    exit(EXIT_FAILURE);
+    exit(EXIT_FAILURE); //hola cambio
 }
 
-// Semilla de RNG distinta por proceso/hora (útil en generadores tras fork)
 void rand_seed(void) {
     unsigned s = (unsigned)time(NULL) ^ (unsigned)getpid() ^ (unsigned)getppid();
     srand(s);
@@ -31,22 +28,30 @@ static const char *NAMES[] = {
     "Ana","Luis","Luz","Juan","Sofi","Nico","Pia","Tomi","Lara","Rami",
     "Mia","Mate","Lolo","Iara","Gero","Vio","Ivo","Lau","Pau","Roc"
 };
-static const char *CITIES[] = {
-    "BsAs","Cba","Ros","Mza","Tuc","Lpaz","Neu","Riv","Sal","Juj"
+static const char *EVENTS[] = {
+    "Charla","Meetup","Taller","Feria","Seminario",
+    "Concierto","Expo","Workshop","Hackday","Keynote"
 };
 
-// Genera un registro con datos aleatorios coherentes para el CSV
-void fill_random_record(record_t *r, int id) {
-    r->id    = id;
-    r->age   = 18 + rand()%73;     // 18..90
-    r->score = rand()%101;         // 0..100
-    snprintf(r->name, MAX_NAME, "%s",
+// Genera un registro coherente con la regla de negocio (snapshot de cola)
+// - mark_first_attended=true marca prioridad==1 como "Atendido" (opcional).
+void fill_random_record(record_t *r, int id, int prioridad, bool mark_first_attended) {
+    r->id        = id;
+    r->prioridad = prioridad;
+
+    snprintf(r->nombreUser, MAX_NAME, "%s",
              NAMES[rand()% (int)(sizeof(NAMES)/sizeof(NAMES[0]))]);
-    snprintf(r->city, MAX_CITY, "%s",
-             CITIES[rand()% (int)(sizeof(CITIES)/sizeof(CITIES[0]))]);
+    snprintf(r->evento, MAX_NAME, "%s",
+             EVENTS[rand()% (int)(sizeof(EVENTS)/sizeof(EVENTS[0]))]);
+
+    if (mark_first_attended && prioridad == 1) {
+        snprintf(r->estado, MAX_EST, "Atendido");
+    } else {
+        snprintf(r->estado, MAX_EST, "Esperando");
+    }
 }
 
-// Genera nombres únicos de recursos POSIX (para no colisionar entre corridas)
+// Nombres únicos para recursos POSIX (evitan colisiones entre corridas)
 void gen_names(names_t *n) {
     int r = rand();
     snprintf(n->shm_name,       sizeof(n->shm_name),       "/pc_shm_%d_%d",   (int)getpid(), r);
