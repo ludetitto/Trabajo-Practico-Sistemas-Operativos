@@ -14,10 +14,10 @@ FILE *abrir_csv(const char *path, int incluir_encabezado)
     return f;
 }
 
-void escribir_csv(FILE *f, const registro_t *r)
+void escribir_csv(FILE *f, const registro_t *reg)
 {
-    fprintf(f, "%u,%d,%d,%s\n", r->id, r->generador, (int)r->pid, r->nombre);
-    cola_sidecar_log(r); // ya compila porque ahora está el prototipo
+    fprintf(f, "%u,%d,%d,%s\n", reg->id, reg->generador, (int)reg->pid, reg->nombre);
+    cola_sidecar_log(reg); // ya compila porque ahora está el prototipo
 }
 
 void cerrar_csv(FILE *f)

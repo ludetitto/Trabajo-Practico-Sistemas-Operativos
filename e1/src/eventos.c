@@ -7,11 +7,13 @@ const char *evento_aleatorio(void)
     static const char *eventos[] = {
         "Lollapalooza", "Cosquin Rock", "Bresh"};
     static int semilla = 0;
+    size_t n;
+    
     if (!semilla)
     {
         srand((unsigned)time(NULL) ^ (unsigned)clock());
         semilla = 1;
     }
-    size_t n = sizeof(eventos) / sizeof(eventos[0]);
+    n = sizeof(eventos) / sizeof(eventos[0]);
     return eventos[rand() % n];
 }
