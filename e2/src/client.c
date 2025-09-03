@@ -49,26 +49,24 @@ int main(int argc, char **argv)
   {
     printf("> ");
     fflush(stdout);
-    if (!fgets(in, sizeof(in), stdin))
-      break;
-    trim_nl(in);
-    if (!*in)
-      continue;
-    fprintf(io, "%s\n", in);
-    fflush(io);
-    // leer respuesta (puede ser multi-línea)
-    while (fgets(out, sizeof(out), io))
-    {
-      fputs(out, stdout);
-      if (!strncmp(out, "OK", 2) || !strncmp(out, "ERR", 3) || !strncmp(out, "BYE", 3))
-        break;
-      if (!strncmp(out, "END", 3))
-        break;
-      if (!strncmp(out, "RESULT", 6))
-        continue; // seguir leyendo
+    if (fgets(in, sizeof(in), stdin)) {
+      trim_nl(in);
+      if (!*in)
+        continue;
+      fprintf(io, "%s\n", in);
+      fflush(io);
+      // leer respuesta (puede ser multi-línea)
+      while (fgets(out, sizeof(out), io) && !strcasecmp(in, "QUIT")
+      {
+        fputs(out, stdout);
+        if (!strncmp(out, "OK", 2) || !strncmp(out, "ERR", 3) || !strncmp(out, "BYE", 3))
+          break;
+        if (!strncmp(out, "END", 3))
+          break;
+        if (!strncmp(out, "RESULT", 6))
+          continue; // seguir leyendo
+      }
     }
-    if (!strcasecmp(in, "QUIT"))
-      break;
   }
 
   fclose(io);

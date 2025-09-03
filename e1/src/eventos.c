@@ -4,14 +4,14 @@
 
 const char *evento_aleatorio(void)
 {
-    static const char *g_eventos[] = {
+    static const char *eventos[] = {
         "Lollapalooza", "Cosquin Rock", "Bresh"};
-    static int seeded = 0;
-    if (!seeded)
+    static int semilla = 0;
+    if (!semilla)
     {
         srand((unsigned)time(NULL) ^ (unsigned)clock());
-        seeded = 1;
+        semilla = 1;
     }
-    size_t n = sizeof(g_eventos) / sizeof(g_eventos[0]);
-    return g_eventos[rand() % n];
+    size_t n = sizeof(eventos) / sizeof(eventos[0]);
+    return eventos[rand() % n];
 }
