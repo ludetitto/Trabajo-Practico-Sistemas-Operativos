@@ -1,61 +1,53 @@
-CC=gcc
-CFLAGS=-O2 -Wall -Wextra -std=c11 -Iinclude
-LDFLAGS=-pthread
-OBJDIR=obj
-BINDIR=bin
+# Makefile (reemplazalo completo)
 
-# Build por defecto: generador y coordinador
-all: $(BINDIR)/coordinador $(BINDIR)/generador
+CC       = gcc
+CFLAGS   = -O2 -Wall -Wextra -std=c11 -Iinclude
+LDFLAGS  = -pthread
 
-# Regla patrón para compilar cualquier .c de src/ a .o en obj/
-$(OBJDIR)/%.o: src/%.c | $(OBJDIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+SRC_DIR  = src
+OBJ_DIR  = obj
+BIN_DIR  = bin
 
-# Link del coordinador: ahora incluye cola.o y eventos.o
-$(BINDIR)/coordinador: \
-	$(OBJDIR)/coordinador.o \
-	$(OBJDIR)/ipc.o \
-	$(OBJDIR)/csv.o \
-	$(OBJDIR)/cola.o \
-	$(OBJDIR)/eventos.o \
-	| $(BINDIR)
-	$(CC) $^ -o $@ $(LDFLAGS)
+# Objetos por binario (no hay más cola.o)
+COORD_SRCS = coordinador.c ipc.c csv.c
+GEN_SRCS   = generador.c ipc.c randrec.c
 
-# Link del generador
-$(BINDIR)/generador: \
-	$(OBJDIR)/generador.o \
-	$(OBJDIR)/ipc.o \
-	$(OBJDIR)/randrec.o \
-	| $(BINDIR)
-	$(CC) $^ -o $@ $(LDFLAGS)
+COORD_OBJS = $(addprefix $(OBJ_DIR)/,$(COORD_SRCS:.c=.o))
+GEN_OBJS   = $(addprefix $(OBJ_DIR)/,$(GEN_SRCS:.c=.o))
 
-# Crear carpetas de build si no existen
-$(OBJDIR):
-	mkdir -p $(OBJDIR)
-
-$(BINDIR):
-	mkdir -p $(BINDIR)
-
-# Limpieza
-clean:
-	rm -rf $(OBJDIR) $(BINDIR)
-
-# Demo rápida con 3 generadores y 30 registros (muestra db.csv y cola.csv si existe)
-run: all
-	@echo ">>> Ejecutando demo con 3 generadores (30 registros)"
-	@rm -f db.csv cola.csv
-	@./bin/coordinador -n 3 -t 30 -f db.csv & \
-	sleep 0.5; \
-	./bin/generador -q 10 -g 0 & \
-	./bin/generador -q 10 -g 1 & \
-	./bin/generador -q 10 -g 2 & \
-	wait; \
-	echo ">>> Registros generados:"; wc -l db.csv; \
-	echo ">>> Primeras filas:"; head db.csv; \
-	echo ">>> Últimas  filas:"; tail db.csv; \
-	if [ -f cola.csv ]; then \
-	  echo ">>> Cola (primeras líneas):"; head -n 10 cola.csv; \
-	  echo ">>> Cola (últimas  líneas):"; tail -n 10 cola.csv; \
-	fi
+BINS = $(BIN_DIR)/coordinador $(BIN_DIR)/generador
 
 .PHONY: all clean run
+
+all: $(BINS)
+
+$(BIN_DIR)/coordinador: $(COORD_OBJS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(BIN_DIR)/generador: $(GEN_OBJS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR) $(BIN_DIR):
+	mkdir -p $@
+
+clean:
+	rm -rf $(OBJ_DIR) $(BIN_DIR)
+
+# Ejemplo de ejecución: 3 generadores, 90 registros totales
+# (coordinador elimina IPCs al terminar)
+run: all
+	@set -e; \
+	out="productos.csv"; \
+	N=3; TOTAL=90; PORG=$$((TOTAL/N)); \
+	echo "[+] Ejecutando coordinador -> $$out"; \
+	$(BIN_DIR)/coordinador -n $$N -t $$TOTAL -f $$out & \
+	PID_COORD=$$!; \
+	for i in `seq 0 $$((N-1))`; do \
+		echo "[+] Generador $$i con $$PORG registros"; \
+		$(BIN_DIR)/generador -q $$PORG -g $$i & \
+	done; \
+	wait $$PID_COORD; \
+	echo "[+] Listo. CSV generado: $$out"
