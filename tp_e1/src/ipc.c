@@ -1,12 +1,11 @@
 // src/ipc.c
 // -----------------------------------------------------------------------------
-// SHM POSIX + Semáforos POSIX: creación, mapeo y unlink
+// SHM POSIX + Semáforos POSIX: creación, mapeo, apertura y unlink.
 // -----------------------------------------------------------------------------
 
 #include "ipc.h"
 
 int create_shm(const char *name, size_t total_size) {
-    // O_CREAT|O_EXCL: falla si ya existe (evita conectar a segmentos viejos)
     int fd = shm_open(name, O_CREAT|O_EXCL|O_RDWR, 0600);
     if (fd == -1) perr("shm_open");
     if (ftruncate(fd, (off_t)total_size) == -1) perr("ftruncate");
@@ -19,7 +18,6 @@ void *map_shm(int fd, size_t total_size) {
     return p;
 }
 
-// Elimina todos los objetos POSIX creados por esta ejecución
 void unlink_all(const names_t *n) {
     shm_unlink(n->shm_name);
     sem_unlink(n->sem_empty_name);
@@ -28,7 +26,6 @@ void unlink_all(const names_t *n) {
     sem_unlink(n->sem_id_name);
 }
 
-// Crea semáforos con contadores iniciales correctos para el patrón P/C
 sems_t create_sems(const names_t *nn, size_t capacity) {
     sems_t s;
     s.empty = sem_open(nn->sem_empty_name, O_CREAT|O_EXCL, 0600, capacity);
@@ -42,7 +39,6 @@ sems_t create_sems(const names_t *nn, size_t capacity) {
     return s;
 }
 
-// Abre semáforos ya creados (rutas conocidas por los nombres únicos)
 sems_t open_sems(const names_t *nn) {
     sems_t s;
     s.empty = sem_open(nn->sem_empty_name, 0);

@@ -1,7 +1,7 @@
 // include/coordinator.h
 // -----------------------------------------------------------------------------
-// Proceso coordinador/consumidor: extrae exactamente 'total' registros
-// del ring y los persiste en un CSV con encabezado e ID como primera columna.
+// Proceso COORDINADOR: extrae exactamente 'total' registros y los persiste en
+// un CSV con encabezado e ID como primera columna.
 // -----------------------------------------------------------------------------
 
 #ifndef COORDINATOR_H

@@ -1,10 +1,10 @@
 // src/producer.c
 // -----------------------------------------------------------------------------
-// Proceso GENERADOR (productor):
+// GENERADOR:
 //  - Abre SHM y semáforos por nombre.
-//  - Pide bloques de IDs de a 10.
-//  - Para cada ID: genera registro aleatorio y lo "empuja" a la cola (ring_push).
-//  - Termina al agotarse los IDs.
+//  - Solicita bloques de IDs y PRIORIDADES de a 10 (últimos pueden ser <10).
+//  - Pareamos ID<->PRIORIDAD en el mismo orden para garantizar 1..N contiguo.
+//  - Para cada par, generamos un registro y lo empujamos al ring (uno por vez).
 // -----------------------------------------------------------------------------
 
 #include "producer.h"
@@ -12,11 +12,9 @@
 #include "ring.h"
 
 void generator_loop(const names_t *nn) {
-    // Abrimos SHM existente (lo creó el coordinador en main)
     int fd = shm_open(nn->shm_name, O_RDWR, 0600);
     if (fd == -1) perr("shm_open gen");
 
-    // Obtenemos tamaño para mapear correctamente
     struct stat st;
     if (fstat(fd, &st) == -1) perr("fstat gen");
 
@@ -26,22 +24,31 @@ void generator_loop(const names_t *nn) {
     rand_seed();
 
     for (;;) {
-        int start = 0, cnt = 0;
+        int id_start=0, id_cnt=0;
+        int pr_start=0, pr_cnt=0;
 
-        // Solicita un bloque de IDs (atómico). Si no hay, terminamos.
-        if (!request_id_block(shm, &sems, &start, &cnt)) {
-            break; // no quedan IDs por generar
+        bool have_ids  = request_id_block  (shm, &sems, &id_start, &id_cnt);
+        bool have_prio = request_prio_block(shm, &sems, &pr_start, &pr_cnt);
+
+        if (!have_ids || !have_prio) {
+            break; // no quedan más elementos a producir
         }
+
+        int cnt = (id_cnt < pr_cnt) ? id_cnt : pr_cnt;
 
         for (int i = 0; i < cnt; ++i) {
             record_t r;
-            fill_random_record(&r, start + i);
-            // Deposita UN registro por vez (requisito) en la cola
+            int id = id_start + i;
+            int pr = pr_start + i;
+
+            // Si querés snapshot con el primero marcado "Atendido", poné true.
+            bool mark_first_attended = false;
+
+            fill_random_record(&r, id, pr, mark_first_attended);
             ring_push(shm, &sems, &r);
         }
     }
 
-    // Limpieza local (eliminación global la hace el padre)
     munmap(shm, (size_t)st.st_size);
     close(fd);
     sem_close(sems.empty);
@@ -49,5 +56,5 @@ void generator_loop(const names_t *nn) {
     sem_close(sems.mutex);
     sem_close(sems.idlock);
 
-    _exit(0); // salir del proceso hijo
+    _exit(0);
 }

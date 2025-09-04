@@ -74,7 +74,11 @@ typedef struct {
 void   die(const char *fmt, ...) __attribute__((format(printf,1,2)));
 void   perr(const char *msg);
 void   rand_seed(void);
-void   fill_random_record(record_t *r, int id);
+
+// Genera un registro de ejemplo consistente con la regla de negocio.
+void   fill_random_record(record_t *r, int id, int prioridad, bool mark_first_attended);
+
+// Genera nombres únicos para recursos POSIX (evita colisiones entre corridas).
 void   gen_names(names_t *n);
 
 #endif // COMMON_H

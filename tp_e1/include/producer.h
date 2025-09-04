@@ -1,7 +1,7 @@
 // include/producer.h
 // -----------------------------------------------------------------------------
-// Proceso generador: toma bloques de IDs y produce registros aleatorios,
-// depositándolos en el ring buffer de a UNO (requisito).
+// Proceso GENERADOR: solicita bloques de IDs y PRIORIDADES, arma registros y
+// los deposita de a uno en el ring buffer.
 // -----------------------------------------------------------------------------
 
 #ifndef PRODUCER_H
