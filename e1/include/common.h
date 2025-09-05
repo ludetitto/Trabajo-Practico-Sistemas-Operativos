@@ -19,16 +19,16 @@
 #include <signal.h>
 #include <sys/types.h>
 
-#define COLA_CAP 64    // tamaño del buffer circular
-#define NOMBRE_MAXLEN 32 // longitud de nombres aleatorios
+#define COLA_CAP 8       // tamaño del buffer circular
+#define NOMBRE_MAXLEN 64 // longitud de nombres aleatorios
 
 // nombres POSIX de objetos compartidos
-#define SHM_RING_NAME "/tp_ring" // buffer circular
-#define SHM_IDS_NAME "/tp_ids" // estado de IDs
+#define SHM_RING_NAME "/tp_ring"       // buffer circular
+#define SHM_IDS_NAME "/tp_ids"         // estado de IDs
 #define SEM_EMPTY_NAME "/tp_sem_empty" // semáforo de huecos vacíos
-#define SEM_FULL_NAME "/tp_sem_full" // semáforo de huecos ocupados
+#define SEM_FULL_NAME "/tp_sem_full"   // semáforo de huecos ocupados
 #define SEM_MUTEX_NAME "/tp_sem_mutex" // semáforo mutex para buffer circular
-#define SEM_IDS_NAME "/tp_sem_ids" // semáforo mutex para estado de IDs
+#define SEM_IDS_NAME "/tp_sem_ids"     // semáforo mutex para estado de IDs
 
 typedef struct
 {
@@ -36,13 +36,15 @@ typedef struct
     int generador;
     pid_t pid;
     char nombre[NOMBRE_MAXLEN];
+    float precio; // [1000.00, 100000.00]
+    uint32_t stock; // [0, 100]
 } registro_t;
 
 typedef struct
 {
     registro_t buffer[COLA_CAP];
-    uint32_t primero;  // próximo pop
-    uint32_t ultimo;  // próximo push
+    uint32_t primero;            // próximo pop
+    uint32_t ultimo;             // próximo push
     uint32_t cant_elem_ocupados; // elementos ocupados
 } cola_t;
 
