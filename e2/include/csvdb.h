@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #define NOMBRE_MAX  32
+#define TIMESTAMP_MAXLEN 20
 
 /* Registro base del E1 (persistente) */
 typedef struct {
@@ -18,6 +19,8 @@ typedef struct nodo {
     char nombre[NOMBRE_MAX];
     float precio; /* [1000.00, 100000.00] */
     uint32_t stock; /* [0, 100] */
+    char timestamp[TIMESTAMP_MAXLEN];
+    bool borrado;
     struct nodo *ant, *sig;
 } nodo_t;
 

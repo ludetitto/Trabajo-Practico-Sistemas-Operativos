@@ -208,14 +208,16 @@ int abrir_arch(const char *csv_path)
      producto_t p;
      char producto[128];
 
-     // CSV: id,generador,pid,producto,precio,stock
-     if (sscanf(line, "%u,%u,%u,%127[^,],%lf,%d",
-         &p.id,
+     // CSV: id,generador,pid,producto,precio,stock,timestamp
+     if (sscanf(line, "%u,%u,%u,%127[^,],%lf,%d,%s,%d",
+          &p.id,
           &p.generador,
           &p.pid,
           producto,
           &p.precio,
-          &p.stock) != 6)
+          &p.stock,
+          &p.timestamp,
+          &p.borrado) != 8)
       {
           continue; // línea inválida
       }

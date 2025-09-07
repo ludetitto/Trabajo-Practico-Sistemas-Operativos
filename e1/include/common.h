@@ -21,6 +21,7 @@
 
 #define COLA_CAP 8       // tamaño del buffer circular
 #define NOMBRE_MAXLEN 64 // longitud de nombres aleatorios
+#define TIMESTAMP_MAXLEN 20
 
 // nombres POSIX de objetos compartidos
 #define SHM_RING_NAME "/tp_ring"       // buffer circular
@@ -38,7 +39,8 @@ typedef struct
     char nombre[NOMBRE_MAXLEN];
     float precio; // [1000.00, 100000.00]
     uint32_t stock; // [0, 100]
-    // timestamp
+    char timestamp[TIMESTAMP_MAXLEN]; // timestamp
+    bool borrado;
 } registro_t;
 
 typedef struct
