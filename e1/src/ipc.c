@@ -161,3 +161,43 @@ int pedir_bloque_ids(uint32_t *base, uint32_t *cant)
     sem_post(sem_ids); // V
     return 0;
 }
+
+int pop_timeout(registro_t *r, int timeout_ms)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
+        return -1;
+
+    // sumo timeout_ms a ts (absoluto, como requiere sem_timedwait)
+    ts.tv_sec  += timeout_ms / 1000;
+    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) 
+    {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000L;
+    }
+
+    // esperar hasta que haya al menos un elemento, con timeout
+    int rc;
+    do 
+    {
+        rc = sem_timedwait(sem_full, &ts);
+    } while (rc == -1 && errno == EINTR);
+
+    if (rc == -1) 
+    {
+        if (errno == ETIMEDOUT) return 1; // no llegó nada a tiempo
+        return -1;                        // otro error
+    }
+
+    // sección crítica normal
+    while (sem_wait(sem_mutex) == -1 && errno == EINTR) {}
+
+    *r = cola->buffer[cola->primero];
+    cola->primero = (cola->primero + 1) % COLA_CAP;
+    cola->cant_elem_ocupados--;
+
+    sem_post(sem_mutex);
+    sem_post(sem_empty);
+    return 0;
+}

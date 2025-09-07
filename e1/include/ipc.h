@@ -16,6 +16,7 @@ extern sem_t* sem_ids;
 // Abrir y cerrar todos los IPCs
 int  ipc_abrir_todos(int crear, uint32_t total_ids);
 void ipc_cerrar_todos(int borrar_ahora);
+int pop_timeout(registro_t *r, int timeout_ms);
 
 // Primitivas de cola
 void push(const registro_t* r);

@@ -7,12 +7,15 @@
 #include <unistd.h>
 #include <errno.h>
 
-static ssize_t escribir_todo(int fd, const void *buf, size_t n) {
+static ssize_t escribir_todo(int fd, const void *buf, size_t n) 
+{
     const char *p = (const char *)buf;
     size_t faltan = n;
-    while (faltan > 0) {
+    while (faltan > 0) 
+    {
         ssize_t r = write(fd, p, faltan);
-        if (r < 0) {
+        if (r < 0) 
+        {
             if (errno == EINTR) continue;
             return -1;
         }
@@ -22,21 +25,37 @@ static ssize_t escribir_todo(int fd, const void *buf, size_t n) {
     return (ssize_t)n;
 }
 
-static ssize_t leer_linea(int fd, char *buf, size_t cap) {
+static ssize_t leer_linea(int fd, char *buf, size_t cap) 
+{
     size_t i = 0;
-    while (i + 1 < cap) {
-        char c;
-        ssize_t r = read(fd, &c, 1);
-        if (r == 0) break;                  // conexión cerrada
-        if (r < 0) { if (errno == EINTR) continue; return -1; }
-        if (c == '\n') { buf[i] = '\0'; return (ssize_t)i; }
-        buf[i++] = c;
+    ssize_t registro = 1;
+
+    while (i + 1 < cap && registro) 
+    {
+        char cad;
+        registro = read(fd, &cad, 1);
+        if (registro)
+        {
+            if (registro < 0) 
+            { 
+                if (errno == EINTR) 
+                    continue; 
+                return -1; 
+            }
+            if (cad == '\n') 
+            { 
+                buf[i] = '\0'; 
+                return (ssize_t)i; 
+            }
+            buf[i++] = c;
+        }
     }
     buf[i] = '\0';
     return (ssize_t)i;
 }
 
-static void quitar_nl(char *s) {
+static void quitar_nl(char *s) 
+{
     size_t n = strlen(s);
     if (n && s[n-1] == '\n') s[n-1] = '\0';
 }
@@ -46,7 +65,8 @@ int main(int argc, char **argv)
     const char *direccion_host = "127.0.0.1";
     int puerto = 5000;
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++) 
+    {
         if (!strcmp(argv[i], "-h") && i + 1 < argc)
             direccion_host = argv[++i];
         else if (!strcmp(argv[i], "-p") && i + 1 < argc)
@@ -54,14 +74,19 @@ int main(int argc, char **argv)
     }
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) { perror("socket"); return 1; }
+    if (sockfd < 0) 
+    { 
+        perror("socket"); 
+        return 1; 
+    }
 
     struct sockaddr_in dir = {0};
     dir.sin_family = AF_INET;
     dir.sin_port = htons(puerto);
     dir.sin_addr.s_addr = inet_addr(direccion_host);
 
-    if (connect(sockfd, (struct sockaddr *)&dir, sizeof(dir)) < 0) {
+    if (connect(sockfd, (struct sockaddr *)&dir, sizeof(dir)) < 0) 
+    {
         perror("connect");
         return 1;
     }
@@ -69,14 +94,16 @@ int main(int argc, char **argv)
     // Leer banner inicial del servidor (si lo hay)
     char buffer[1024];
     ssize_t n = leer_linea(sockfd, buffer, sizeof(buffer));
-    if (n > 0) {
+    if (n > 0) 
+    {
         fputs(buffer, stdout);
         fputc('\n', stdout);
     }
 
     // REPL: leo de stdin, envío al servidor y muestro respuesta
     char linea[1024];
-    for (;;) {
+    for (;;) 
+    {   
         fputs("> ", stdout);
         fflush(stdout);
 
@@ -89,14 +116,16 @@ int main(int argc, char **argv)
         linea[len] = '\n';
         linea[len+1] = '\0';
 
-        if (escribir_todo(sockfd, linea, len + 1) < 0) {
+        if (escribir_todo(sockfd, linea, len + 1) < 0) 
+        {
             perror("write");
             break;
         }
 
         // leer 1 línea de respuesta (ajusta si tu protocolo devuelve múltiples)
         n = leer_linea(sockfd, buffer, sizeof(buffer));
-        if (n <= 0) {            // cerrado o error
+        if (n <= 0) 
+        {            // cerrado o error
             if (n < 0) perror("read");
             break;
         }

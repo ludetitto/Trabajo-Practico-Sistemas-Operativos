@@ -32,7 +32,9 @@ int main(int argc, char **argv)
     }
 
     if (ipc_abrir_todos(0, 0) < 0)
-        matar("ipc_abrir_todos(crear) fallo");
+    {
+        matar("ipc_abrir_todos(crear) falló al ejecutarse.");
+    }
 
     while (cant_producida < cant_a_producir)
     {
@@ -46,8 +48,9 @@ int main(int argc, char **argv)
                 registro_t r;
                 generar_randrec(&r, base + i, idx_generador);                              // genero un registro aleatorio
                 push(&r);                                                                  // lo pongo en el buffer circular (bloquea si está lleno)
-                struct timespec ts = {.tv_sec = 0, .tv_nsec = (rand() % 5 + 1) * 1000000}; // 1–5 ms
-                nanosleep(&ts, NULL);
+                /* struct timespec ts = {.tv_sec = 0, .tv_nsec = (rand() % 5 + 1) * 1000000}; // 1–5 ms
+                nanosleep(&ts, NULL); */
+                sleep(3);
                 cant_producida++;
             }
         }

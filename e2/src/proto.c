@@ -49,7 +49,7 @@ static pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int tx_activa = 0;
 static int tx_owner_fd = -1;
 
-static int tx_begin(int fd)
+static int iniciar_tx(int fd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_activa && tx_owner_fd != fd)
@@ -62,13 +62,14 @@ static int tx_begin(int fd)
   pthread_mutex_unlock(&tx_mtx);
   return 0;
 }
-static int tx_owner_only(int fd)
+static int es_owner_tx(int fd)
 {
   pthread_mutex_lock(&tx_mtx);
   int ok = (tx_activa && tx_owner_fd == fd);
   pthread_mutex_unlock(&tx_mtx);
   return ok ? 0 : -1;
 }
+/*
 static int tx_other_active(int fd)
 {
   pthread_mutex_lock(&tx_mtx);
@@ -76,7 +77,8 @@ static int tx_other_active(int fd)
   pthread_mutex_unlock(&tx_mtx);
   return busy ? 0 : -1;
 }
-static void tx_end(int fd)
+*/
+static void finalizar_tx(int fd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_activa && tx_owner_fd == fd)
@@ -111,30 +113,10 @@ void proto_handle_line(int cfd, char *line)
   p += i;
   lskip(&p);
 
-  /* Lecturas: PING/SHOWQ (permitidas, salvo si otro tiene TX y querés SHOWQ) */
+  /* Lecturas: PING (permitidas, salvo si otro tiene TX y querés SHOWQ) */
   if (!strcmp(cmd, "PING"))
   {
     dprintf(cfd, "OK\n");
-    return;
-  }
-  if (!strcmp(cmd, "SHOWQ"))
-  {
-    if (tx_other_active(cfd) == 0)
-    {
-      dprintf(cfd, "ERR TX_ACTIVE\n");
-      return;
-    }
-    char ev[64];
-    if (kv_get(p, "evento", ev, sizeof(ev)) < 0)
-    {
-      dprintf(cfd, "ERR ARG\n");
-      return;
-    }
-    char out[8192];
-    if (q_show(ev, out, sizeof(out)) == 0)
-      dprintf(cfd, "%s", out);
-    else
-      dprintf(cfd, "ERR EVENTO\n");
     return;
   }
 
@@ -149,34 +131,34 @@ void proto_handle_line(int cfd, char *line)
   }
   if (!strcmp(cmd, "COMMIT"))
   {
-    if (tx_owner_only(cfd) != 0)
+    if (es_owner_tx(cfd) != 0)
     {
       dprintf(cfd, "ERR NO_TX\n");
       return;
     }
-    tx_end(cfd);
+    finalizar_tx(cfd);
     dprintf(cfd, "OK\n");
     return;
   }
   if (!strcmp(cmd, "ROLLBACK"))
   {
-    if (tx_owner_only(cfd) != 0)
+    if (es_owner_tx(cfd) != 0)
     {
       dprintf(cfd, "ERR NO_TX\n");
       return;
     }
-    tx_end(cfd);
+    finalizar_tx(cfd);
     dprintf(cfd, "OK\n");
     return;
   }
 
-  /* Mutaciones (ADD/UPDATE/DELETE/ATTEND/LEAVE): solo dueño si hay TX activa */
-  if (tx_other_active(cfd) == 0)
+  /* Mutaciones (ADD/UPDATE/DELETE): solo dueño si hay TX activa */
+  if (es_owner_tx(cfd) != 0)
   {
     dprintf(cfd, "ERR TX_ACTIVE\n");
     return;
   }
-  if (tx_activa && tx_owner_only(cfd) != 0)
+  if (tx_activa && es_owner_tx(cfd) != 0)
   {
     dprintf(cfd, "ERR NO_TX\n");
     return;
@@ -184,7 +166,7 @@ void proto_handle_line(int cfd, char *line)
 
   if (!strcmp(cmd, "ADD"))
   {
-    rec_base_t r = {0};
+    registro_t r = {0};
     char v[64], ev[64] = "";
     if (kv_get(p, "nombre", r.nombre, sizeof(r.nombre)) < 0)
     {
@@ -204,7 +186,7 @@ void proto_handle_line(int cfd, char *line)
   }
   if (!strcmp(cmd, "UPDATE"))
   {
-    rec_base_t patch = {0};
+    registro_t patch = {0};
     char v[64];
     if (kv_get(p, "id", v, sizeof(v)) < 0)
     {
@@ -251,7 +233,7 @@ void proto_handle_line(int cfd, char *line)
       dprintf(cfd, "ERR ARG\n");
       return;
     }
-    rec_base_t r;
+    registro_t r;
     int rc = q_attend(ev, &r);
     if (rc == 0)
       dprintf(cfd, "RESULT 1\n%d,%s\nEND\n", r.id, r.nombre);

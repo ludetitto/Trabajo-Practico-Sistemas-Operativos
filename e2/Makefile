@@ -28,36 +28,33 @@ clean:
 
 # Demo: usa el CSV del E1; si no existe, crea uno chiquito
 demo_queue: all
-	@if [ ! -f ../e1/db.csv ]; then \
-	  echo "id,generador,pid,Nombre" > ../e1/db.csv; \
-	  echo "1,0,123,Juan" >> ../e1/db.csv; \
-	  echo "2,0,456,Ana"  >> ../e1/db.csv; \
-	  echo "3,1,777,Luis" >> ../e1/db.csv; \
+	@if [ ! -f ../e1/productos.csv ]; then \
+	  echo "id,generador,pid,Nombre" > ../e1/productos.csv; \
+	  echo "1,1,758,Monitor 24" 1080p 144Hz,19708.73,35" >> ../e1/productos.csv; \
+	  echo "11,0,757,Lector tarjetas SD,28274.66,58"  >> ../e1/productos.csv; \
+	  echo "21,2,759,Mouse gamer 16000 DPI,60620.63,78" >> ../e1/productos.csv; \
 	fi
 	@echo ">>> Lanzando server (CSV=../e1/db.csv) en 127.0.0.1:5000"
-	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/db.csv & echo $$! > .srvpid
+	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/productos.csv & echo $$! > .srvpid
 	@sleep 1
 	@echo ">>> Script de cliente (cola por evento + tx):"
 	@( \
 	  echo "PING"; \
 	  echo "SHOWQ evento=Lollapalooza"; \
 	  echo "ADD nombre=Zeus generador=9 pid=888 evento=Lollapalooza"; \
-	  echo "SHOWQ evento=Lollapalooza"; \
 	  echo "BEGIN"; \
-	  echo "ATTEND evento=Lollapalooza"; \
 	  echo "COMMIT"; \
-	  echo "SHOWQ evento=Lollapalooza"; \
 	  echo "QUIT" \
 	) | ./bin/client -h 127.0.0.1 -p 5000
 	@kill $$(cat .srvpid) >/dev/null 2>&1 || true; rm -f .srvpid
 
 # Ejecuta solo el servidor usando el CSV del E1
 run_server: all
-	@if [ ! -f ../e1/db.csv ]; then \
-	  echo "Falta ../e1/db.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
+	@if [ ! -f ../e1/productos.csv ]; then \
+	  echo "Falta ../e1/productos.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
 	fi
-	@echo ">>> Server en 127.0.0.1:5000 usando ../e1/db.csv"
-	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/db.csv
+	@echo ">>> Server en 127.0.0.1:5000 usando ../e1/productos.csv"
+	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/productos.csv
 
 # Cliente interactivo
 client: all

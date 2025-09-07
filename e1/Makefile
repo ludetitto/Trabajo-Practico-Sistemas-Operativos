@@ -1,7 +1,7 @@
 # Makefile (reemplazalo completo)
 
 CC       = gcc
-CFLAGS   = -O2 -Wall -Wextra -std=c11 -Iinclude
+CFLAGS   = -O2 -Wall -Wextra -std=c11 -Iinclude # nivel de optimización, warnings, estandar C, include
 LDFLAGS  = -pthread
 
 SRC_DIR  = src
@@ -14,6 +14,8 @@ GEN_SRCS   = generador.c ipc.c randrec.c
 
 COORD_OBJS = $(addprefix $(OBJ_DIR)/,$(COORD_SRCS:.c=.o))
 GEN_OBJS   = $(addprefix $(OBJ_DIR)/,$(GEN_SRCS:.c=.o))
+
+BINS = $(BIN_DIR)/coordinador $(BIN_DIR)/generador
 
 .PHONY: all clean run
 

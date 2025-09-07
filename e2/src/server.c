@@ -15,43 +15,43 @@
 int proto_handle_line(int fd, const char *line);
 
 /* estado de transacción (lock exclusivo sobre el CSV) */
-static int g_fd_csv = -1;
-static volatile int g_tx_active = 0;
-static pthread_mutex_t g_tx_mtx = PTHREAD_MUTEX_INITIALIZER;
+static int csv_fd = -1;
+static volatile int tx_active = 0;
+static pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-static int try_begin_tx(void)
+static int intentar_iniciar_tx(void)
 {
-  pthread_mutex_lock(&g_tx_mtx);
-  if (g_tx_active)
+  pthread_mutex_lock(&tx_mtx);
+  if (tx_active)
   {
-    pthread_mutex_unlock(&g_tx_mtx);
+    pthread_mutex_unlock(&tx_mtx);
     return -1;
   }
   struct flock lk = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
-  if (fcntl(g_fd_csv, F_SETLK, &lk) < 0)
+  if (fcntl(csv_fd, F_SETLK, &lk) < 0)
   {
-    pthread_mutex_unlock(&g_tx_mtx);
+    pthread_mutex_unlock(&tx_mtx);
     return -1;
   }
-  g_tx_active = 1;
-  pthread_mutex_unlock(&g_tx_mtx);
+  tx_active = 1;
+  pthread_mutex_unlock(&tx_mtx);
   return 0;
 }
-static void end_tx(void)
+static void finalizar_tx(void)
 {
-  pthread_mutex_lock(&g_tx_mtx);
+  pthread_mutex_lock(&tx_mtx);
   struct flock lk = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
-  (void)fcntl(g_fd_csv, F_SETLK, &lk);
-  g_tx_active = 0;
-  pthread_mutex_unlock(&g_tx_mtx);
+  (void)fcntl(csv_fd, F_SETLK, &lk);
+  tx_active = 0;
+  pthread_mutex_unlock(&tx_mtx);
 }
 
 /* worker por cliente */
-static void *client_thr(void *arg)
+static void *iniciar_thread_cliente(void *arg)
 {
   int cfd = (int)(intptr_t)arg;
   FILE *in = fdopen(dup(cfd), "r");
-  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [evento=..] | UPDATE ... | DELETE id=.. | SHOWQ evento=.. | ATTEND evento=.. | LEAVE id=.. | BEGIN | COMMIT | ROLLBACK | QUIT\n");
+  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [producto=..] | UPDATE ... | DELETE id=.. | BEGIN | COMMIT | ROLLBACK | QUIT\n");
   char line[1024];
   while (fgets(line, sizeof(line), in))
   {
@@ -62,7 +62,7 @@ static void *client_thr(void *arg)
     }
     if (!strncasecmp(line, "BEGIN", 5))
     {
-      if (try_begin_tx() == 0)
+      if (intentar_iniciar_tx() == 0)
         dprintf(cfd, "OK\n");
       else
         dprintf(cfd, "ERR TX_ACTIVE\n");
@@ -70,22 +70,22 @@ static void *client_thr(void *arg)
     }
     if (!strncasecmp(line, "COMMIT", 6))
     {
-      end_tx();
+      finalizar_tx();
       dprintf(cfd, "OK\n");
       continue;
     }
     if (!strncasecmp(line, "ROLLBACK", 8))
     {
-      end_tx();
+      finalizar_tx();
       dprintf(cfd, "OK\n");
       continue;
     }
 
     /* Si hay transacción activa, nadie puede consultar/modificar */
-    pthread_mutex_lock(&g_tx_mtx);
-    int deny = g_tx_active;
-    pthread_mutex_unlock(&g_tx_mtx);
-    if (deny)
+    pthread_mutex_lock(&tx_mtx);
+    int denegar = tx_active;
+    pthread_mutex_unlock(&tx_mtx);
+    if (denegar)
     {
       dprintf(cfd, "ERR TX_ACTIVE\n");
       continue;
@@ -117,31 +117,31 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-f") && i + 1 < argc)
       csv = argv[++i];
   }
-  if (db_open(csv) < 0)
+  if (abrir_arch(csv) < 0)
   {
     fprintf(stderr, "ERR: no pude abrir CSV %s\n", csv);
     return 1;
   }
-  g_fd_csv = open(csv, O_RDWR | O_CREAT, 0666);
-  if (g_fd_csv < 0)
+  csv_fd = open(csv, O_RDWR | O_CREAT, 0666);
+  if (csv_fd < 0)
   {
     perror("open csv");
     return 1;
   }
 
-  int sfd = socket(AF_INET, SOCK_STREAM, 0);
+  int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   int opt = 1;
-  setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
   sa.sin_port = htons(port);
   sa.sin_addr.s_addr = inet_addr(host);
-  if (bind(sfd, (struct sockaddr *)&sa, sizeof(sa)) < 0)
+  if (bind(socket_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0)
   {
     perror("bind");
     return 1;
   }
-  if (listen(sfd, M) < 0)
+  if (listen(socket_fd, M) < 0)
   {
     perror("listen");
     return 1;
@@ -151,7 +151,7 @@ int main(int argc, char **argv)
   pthread_t th;
   while (1)
   {
-    int cfd = accept(sfd, NULL, NULL);
+    int cfd = accept(socket_fd, NULL, NULL);
     if (cfd < 0)
     {
       if (errno == EINTR)
@@ -159,11 +159,11 @@ int main(int argc, char **argv)
       perror("accept");
       break;
     }
-    pthread_create(&th, NULL, client_thr, (void *)(intptr_t)cfd);
+    pthread_create(&th, NULL, iniciar_thread_cliente, (void *)(intptr_t)cfd);
     pthread_detach(th);
   }
-  close(sfd);
-  db_close();
-  close(g_fd_csv);
+  close(socket_fd);
+  cerrar_arch();
+  close(csv_fd);
   return 0;
 }

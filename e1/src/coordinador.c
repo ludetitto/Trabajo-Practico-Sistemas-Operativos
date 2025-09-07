@@ -20,10 +20,11 @@ static void comando_coordinador(const char *prog)
 
 int main(int argc, char **argv)
 { // Recibe como argumentos: -n <generadores> -t <total_registros> -f <csv>
-    int cant_gen = -1, total = -1;
+    int cant_gen = -1, total = -1, salir = 0;
     const char *csvpath = NULL;
     FILE *f;
     uint32_t escrito = 0;
+    const int TIMEOUT_MS = 10000;
 
     for (int i = 1; i < argc; i++)
     { // Parseo de argumentos
@@ -53,7 +54,7 @@ int main(int argc, char **argv)
     // se hayan escrito "total" registros o se reciba una señal de terminación
 
     if (ipc_abrir_todos(1, (uint32_t)total) < 0)
-        matar("ipc_abrir_todos(crear) fallo"); // Abre todos los IPCs, creando si es necesario
+        matar("ipc_abrir_todos(crear) falló al ejecutarse."); // Abre todos los IPCs, creando si es necesario
     // El segundo parámetro es la cantidad total de IDs que se van a pedir
     // (sirve para inicializar el estado de los IDs)
     // Si ya estaban creados, no los toca
@@ -67,12 +68,27 @@ int main(int argc, char **argv)
         matar("No pude abrir CSV: %s", csvpath);
     }
 
-    while (!parar && escrito < (uint32_t)total)
+    while (!parar && escrito < (uint32_t)total && !salir)
     {
         registro_t r;
-        pop(&r); // ahora bloquea hasta que haya
-        escribir_csv(f, &r);
-        escrito++;
+        int rc = pop_timeout(&r, TIMEOUT_MS);
+
+        if (!rc) 
+        {
+            // llegó un registro
+            escribir_csv(f, &r);
+            escrito++;
+        } else if (rc == 1) 
+        {
+            // timeout
+            fprintf(stderr, "[coordinador] %d ms sin recibir registros. Finalizo.\n", TIMEOUT_MS);
+            salir = 1;
+        } else 
+        {
+            // error en semáforo
+            perror("[coordinador] pop_timeout");
+            salir = 1;
+        }
     }
 
     cerrar_csv(f);

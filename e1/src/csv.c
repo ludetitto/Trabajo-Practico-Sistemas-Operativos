@@ -21,12 +21,12 @@ void escribir_csv(FILE *f, const registro_t *reg)
     // nombre = producto (se mantiene el campo para no romper otros módulos).
     // Precio con 2 decimales.
     fprintf(f, "%u,%d,%d,%s,%.2f,%u\n",
-            r->id,
-            r->generador,
-            (int)r->pid,
-            r->nombre,
-            (double)r->precio,
-            r->stock);
+            reg->id,
+            reg->generador,
+            (int)reg->pid,
+            reg->nombre,
+            (double)reg->precio,
+            reg->stock);
     fflush(f);
 }
 

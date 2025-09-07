@@ -38,6 +38,7 @@ typedef struct
     char nombre[NOMBRE_MAXLEN];
     float precio; // [1000.00, 100000.00]
     uint32_t stock; // [0, 100]
+    // timestamp
 } registro_t;
 
 typedef struct

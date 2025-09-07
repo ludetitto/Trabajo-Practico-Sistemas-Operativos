@@ -64,10 +64,10 @@ void semilla_randrec(void)
     }
 }
 
-static inline float rand_rango_float(float lo, float hi)
+static inline float rand_rango_float(float limInf, float limSup)
 {
-    float u = (float)rand() / (float)RAND_MAX;
-    return lo + u * (hi - lo);
+    float n = (float)rand() / (float)RAND_MAX;
+    return limInf + n * (limSup - limInf);
 }
 
 void generar_randrec(registro_t *r, uint32_t id, int generar_idx)

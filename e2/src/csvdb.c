@@ -10,91 +10,133 @@
 #include "../include/csvdb.h"
 
 /* ====== Eventos soportados (coincidir con lo de E1) ====== */
-static const char *EVTS[] = {
-    "Lollapalooza",
-    "Cosquin Rock",
-    "Bresh",
-    "Primavera Sound"};
-#define EVT_COUNT (int)(sizeof(EVTS) / sizeof(EVTS[0]))
+static const char *PRODUCTOS[] = {
+    "CPU AMD Ryzen 5 5600X",
+    "CPU Intel Core i5-12400F",
+    "Motherboard B550M",
+    "Motherboard Z690",
+    "Memoria RAM DDR4 8GB 3200",
+    "Memoria RAM DDR4 16GB 3200",
+    "Memoria RAM DDR5 16GB 5200",
+    "SSD NVMe 500GB",
+    "SSD NVMe 1TB",
+    "SSD SATA 480GB",
+    "HDD 2TB 7200rpm",
+    "Placa de video RTX 3060",
+    "Placa de video RTX 4060",
+    "Placa de video RX 6600",
+    "Fuente 650W 80+ Bronze",
+    "Fuente 750W 80+ Gold",
+    "Gabinete ATX con vidrio templado",
+    "Cooler CPU torre 120mm",
+    "Kit 3 coolers ARGB 120mm",
+    "Monitor 24\" 1080p 144Hz",
+    "Monitor 27\" 1440p 165Hz",
+    "Teclado mecánico TKL",
+    "Mouse gamer 16000 DPI",
+    "Combo teclado y mouse inalámbricos",
+    "Auriculares gamer 7.1",
+    "Micrófono condensador USB",
+    "Placa madre H610M",
+    "Placa madre B760",
+    "Router WiFi 6 AX1800",
+    "Adaptador WiFi USB",
+    "Webcam 1080p",
+    "Cámara IP 2K",
+    "Capturadora HDMI USB",
+    "Hub USB 3.0 7 puertos",
+    "Cargador USB-C 65W",
+    "UPS 1200VA",
+    "Dock NVMe USB-C",
+    "Lector tarjetas SD",
+    "Pad mouse XL",
+    "Soporte monitor articulado",
+    "Silla gamer reclinable",
+    "Notebook 15\" i5 8GB 512GB",
+    "Mini PC N100 16GB 512GB",
+    "Raspberry Pi 4 8GB",
+    "Disipador M.2",
+    "Cable HDMI 2.1 2m",
+    "Cable DisplayPort 1.4 2m",
+    "Pasta térmica 5g",
+    "Switch gigabit 8 puertos",
+    "NAS 2 bahías",
+    "Enclosure 2.5\" USB 3.0"};
+#define CANT_PRODUCTOS = sizeof(PRODUCTOS) / sizeof(PRODUCTOS[0]);
 
 /* ====== Estado global ====== */
-static char g_csv_path[512] = {0};
-static dll_t g_queues[EVT_COUNT];
-static nodo_t **g_all = NULL; /* vector de punteros a nodos (índice lineal) */
-static size_t g_all_cap = 0, g_all_len = 0;
+static char csv_path[512] = {0};
+static lista_doble_t lista[EVT_COUNT];
+static nodo_t **indice = NULL; /* vector de punteros a nodos (índice lineal) */
+static size_t indice_cap = 0, indice_tam = 0;
 
-static pthread_mutex_t g_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 
 /* ====== Utilitarios ====== */
-const char *evt_name_by_index(int idx) { return (idx >= 0 && idx < EVT_COUNT) ? EVTS[idx] : NULL; }
-int evt_index(const char *e)
+const char *obtener_producto_por_indice(int idx) 
+{ 
+  return (idx >= 0 && idx < CANT_PRODUCTOS) ? PRODUCTOS[idx] : NULL; 
+}
+
+int buscar_indice_producto(const char *e)
 {
   if (!e)
     return -1;
-  for (int i = 0; i < EVT_COUNT; i++)
+  for (int i = 0; i < CANT_PRODUCTOS; i++)
     if (strcasecmp(e, EVTS[i]) == 0)
       return i;
   return -1;
 }
-const char *evt_random(void)
+
+static void poner_al_final(lista_doble_t *pl, nodo_t *nodo)
 {
-  static int seeded = 0;
-  if (!seeded)
-  {
-    srand((unsigned)time(NULL) ^ (unsigned)clock());
-    seeded = 1;
-  }
-  return EVTS[rand() % EVT_COUNT];
+  nodo->ant = pl->ultimo;
+  n->sig = NULL;
+  if (L->ultimo)
+    pl->ultimo->sig = nodo;
+  else
+    pl->primero = nodo;
+  pl->ult = nodo;
+  pl->tam++;
+}
+static void sacar_de_lista(lista_doble_t *pl, nodo_t *nodo)
+{
+  if (nodo->ant)
+    nodo->ant->sig = nodo->sig;
+  else
+    nodo->pri = nodo->sig;
+  if (nodo->next)
+    nodo->sig->ant = nodo->ant;
+  else
+    nodo->ult = nodo->ant;
+  nodo->tam--;
 }
 
-static void list_push_back(dll_t *L, nodo_t *n)
+static void vaciar_lista(nodo_t *nodo)
 {
-  n->prev = L->tail;
-  n->next = NULL;
-  if (L->tail)
-    L->tail->next = n;
-  else
-    L->head = n;
-  L->tail = n;
-  L->len++;
-}
-static void list_remove(dll_t *L, nodo_t *n)
-{
-  if (n->prev)
-    n->prev->next = n->next;
-  else
-    L->head = n->next;
-  if (n->next)
-    n->next->prev = n->prev;
-  else
-    L->tail = n->prev;
-  L->len--;
-}
-static void all_push(nodo_t *n)
-{
-  if (g_all_len == g_all_cap)
+  if (indice_tam == indice_cap)
   {
-    size_t nc = g_all_cap ? g_all_cap * 2 : 128;
-    nodo_t **nv = (nodo_t **)realloc(g_all, nc * sizeof(nodo_t *));
-    if (!nv)
+    size_t nueva_capacidad = indice_cap ? indice_cap * 2 : 128;
+    nodo_t **nuevo_nodo = (nodo_t **)realloc(indice, nueva_capacidad * sizeof(nodo_t *));
+    if (!nuevo_nodo)
       return;
-    g_all = nv;
-    g_all_cap = nc;
+    indice = nuevo_nodo;
+    indice_cap = nueva_capacidad;
   }
-  g_all[g_all_len++] = n;
+  indice[indice_tam++] = nodo;
 }
-static nodo_t *find_by_id(int id)
+static nodo_t *obtener_producto_por_id(int id)
 {
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i]->base.id == id)
-      return g_all[i];
+  for (size_t i = 0; i < indice_tam; i++)
+    if (indice[i]->base.id == id)
+      return indice[i];
   return NULL;
 }
 
 /* ====== Lectura/Escritura de CSV (E1 schema) ======
    Formato: id,generador,pid,Nombre
 */
-static int parse_line_base(const char *s, rec_base_t *r)
+static int parsear_linea_base(const char *s, registro_t *r)
 {
   char tmp[256];
   strncpy(tmp, s, sizeof(tmp) - 1);
@@ -115,41 +157,41 @@ static int parse_line_base(const char *s, rec_base_t *r)
   tok = strsep(&p, ",\r\n");
   if (!tok)
     return -1;
-  strncpy(r->nombre, tok, NAME_MAXLEN - 1);
-  r->nombre[NAME_MAXLEN - 1] = 0;
+  strncpy(r->nombre, tok, MAX_NOMBRE - 1);
+  r->nombre[MAX_NOMBRE - 1] = 0;
   return 0;
 }
 
 static int save_all_base(FILE *f)
 {
   fprintf(f, "id,generador,pid,Nombre\n");
-  for (size_t i = 0; i < g_all_len; i++)
+  for (size_t i = 0; i < indice_tam; i++)
   {
-    rec_base_t *b = &g_all[i]->base;
+    registro_t *b = &indice[i]->base;
     fprintf(f, "%d,%d,%d,%s\n", b->id, b->generador, b->pid, b->nombre);
   }
   return 0;
 }
 
 /* ====== Carga desde CSV del E1 y construcción de colas ====== */
-int db_open(const char *csv_path)
+int abrir_arch(const char *csv_path)
 {
-  pthread_mutex_lock(&g_mtx);
-  strncpy(g_csv_path, csv_path, sizeof(g_csv_path) - 1);
-  for (int i = 0; i < EVT_COUNT; i++)
+  pthread_mutex_lock(&mtx);
+  strncpy(csv_path, csv_path, sizeof(csv_path) - 1);
+  for (int i = 0; i < CANT_PRODUCTOS; i++)
   {
-    g_queues[i].head = g_queues[i].tail = NULL;
-    g_queues[i].len = 0;
-    g_queues[i].contador = 0;
+    lista[i].primero = lista[i].ultimo = NULL;
+    lista[i].tam = 0;
+    lista[i].contador = 0;
   }
-  free(g_all);
-  g_all = NULL;
-  g_all_cap = g_all_len = 0;
+  free(indice);
+  indice = NULL;
+  indice_cap = indice_tam = 0;
 
-  FILE *f = fopen(g_csv_path, "r");
+  FILE *f = fopen(csv_path, "r");
   if (!f)
   {
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
 
@@ -157,252 +199,165 @@ int db_open(const char *csv_path)
   if (!fgets(line, sizeof(line), f))
   {
     fclose(f);
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
-  if (strncasecmp(line, "id,generador,pid,Nombre", 23) != 0)
+  
+  while (fgets(line, sizeof(line), f)) 
   {
-    rec_base_t r;
-    if (parse_line_base(line, &r) == 0)
-    {
-      nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-      n->base = r;
-      strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-      strncpy(n->evento, evt_random(), EVT_MAXLEN - 1);
-      int ei = evt_index(n->evento);
-      if (ei < 0)
-        ei = 0;
-      n->posicion = ++g_queues[ei].contador;
-      list_push_back(&g_queues[ei], n);
-      all_push(n);
+     producto_t p;
+     char producto[128];
+
+     // CSV: id,generador,pid,producto,precio,stock
+     if (sscanf(line, "%u,%u,%u,%127[^,],%lf,%d",
+         &p.id,
+          &p.generador,
+          &p.pid,
+          producto,
+          &p.precio,
+          &p.stock) != 6)
+      {
+          continue; // línea inválida
+      }
+
+      strncpy(p.producto, producto, sizeof(p.producto) - 1);
+      p.producto[sizeof(p.producto) - 1] = '\0';
+
+      if (productos_tam < CANT_PRODUCTOS) {
+          productos[productos_tam++] = p;
+      } else {
+          fprintf(stderr, "⚠️ Se alcanzó el máximo CANT_PRODUCTOS\n");
+          break;
+      }
     }
-  }
-  while (fgets(line, sizeof(line), f))
-  {
-    rec_base_t r;
-    if (parse_line_base(line, &r) != 0)
-      continue;
-    nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-    n->base = r;
-    strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-    strncpy(n->evento, evt_random(), EVT_MAXLEN - 1);
-    int ei = evt_index(n->evento);
-    if (ei < 0)
-      ei = 0;
-    n->posicion = ++g_queues[ei].contador;
-    list_push_back(&g_queues[ei], n);
-    all_push(n);
-  }
   fclose(f);
-  pthread_mutex_unlock(&g_mtx);
+  pthread_mutex_unlock(&mtx);
   return 0;
 }
 
-void db_close(void)
+void cerrar_arch(void)
 {
-  pthread_mutex_lock(&g_mtx);
-  for (size_t i = 0; i < g_all_len; i++)
-    free(g_all[i]);
-  free(g_all);
-  g_all = NULL;
-  g_all_cap = g_all_len = 0;
+  pthread_mutex_lock(&mtx);
+  for (size_t i = 0; i < indice_tam; i++)
+    free(indice[i]);
+  free(indice);
+  indice = NULL;
+  indice_cap = indice_tam = 0;
   for (int i = 0; i < EVT_COUNT; i++)
   {
-    g_queues[i].head = g_queues[i].tail = NULL;
-    g_queues[i].len = 0;
-    g_queues[i].contador = 0;
+    lista[i].primero = lista[i].ultimo = NULL;
+    lista[i].len = 0;
+    lista[i].contador = 0;
   }
-  pthread_mutex_unlock(&g_mtx);
+  pthread_mutex_unlock(&mtx);
 }
 
-int db_reload(void)
+int recargar_arch(void)
 {
-  db_close();
-  return db_open(g_csv_path);
+  cerrar_arch();
+  return cerrar_arch(csv_path);
 }
 
-int db_save(void)
+int guardar_arch(void)
 {
-  pthread_mutex_lock(&g_mtx);
-  FILE *f = fopen(g_csv_path, "w");
+  pthread_mutex_lock(&mtx);
+  FILE *f = fopen(csv_path, "w");
   if (!f)
   {
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
   save_all_base(f);
   fclose(f);
-  pthread_mutex_unlock(&g_mtx);
+  pthread_mutex_unlock(&mtx);
   return 0;
 }
 
 /* ====== CRUD base ====== */
-int db_find_id(int id, rec_base_t *out)
+int buscar_id_arch(int id, registro_t *nodoObtenido)
 {
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
-  if (!n)
+  pthread_mutex_lock(&mtx);
+  nodo_t *nodo = obtener_producto_por_id(id);
+  if (!nodo)
   {
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
-  if (out)
-    *out = n->base;
-  pthread_mutex_unlock(&g_mtx);
+  if (nodoObtenido)
+    *nodoObtenido = nodo->base;
+  pthread_mutex_unlock(&mtx);
   return 0;
 }
 
-int db_add(const rec_base_t *r, const char *evento_opt)
+int agregar_arch(const registro_t *r, const char *producto)
 {
   if (!r)
     return -1;
-  pthread_mutex_lock(&g_mtx);
+  pthread_mutex_lock(&mtx);
   int maxid = 0;
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i]->base.id > maxid)
-      maxid = g_all[i]->base.id;
-  nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-  n->base = *r;
-  if (n->base.id == 0)
-    n->base.id = maxid + 1;
-  const char *ev = (evento_opt && *evento_opt) ? evento_opt : evt_random();
-  strncpy(n->evento, ev, EVT_MAXLEN - 1);
-  strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-  int ei = evt_index(n->evento);
+  for (size_t i = 0; i < indice_tam; i++)
+    if (indice[i]->base.id > maxid)
+      maxid = indice[i]->base.id;
+  nodo_t *nodo = (nodo_t *)calloc(1, sizeof(nodo_t));
+  nodo->base = *r;
+  if (nodo->base.id == 0)
+    nodo->base.id = maxid + 1;
+  strncpy(nodo->base, producto, CANT_PRODUCTOS - 1);
+  int ei = obtener_producto_por_id(nodo->base);
   if (ei < 0)
     ei = 0;
-  n->posicion = ++g_queues[ei].contador;
-  list_push_back(&g_queues[ei], n);
-  all_push(n);
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
+  nodo->base = ++lista[ei].contador;
+  sacar_de_lista(&lista[ei], nodo);
+  vaciar_lista(nodo);
+  int rc = guardar_arch();
+  pthread_mutex_unlock(&mtx);
   return rc;
 }
 
-int db_update(const rec_base_t *patch)
+int actualizar_arch(const registro_t *reg)
 {
-  if (!patch)
+  if (!reg)
     return -1;
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(patch->id);
-  if (!n)
+  pthread_mutex_lock(&mtx);
+  nodo_t *nodo = obtener_producto_por_id(reg->id);
+  if (!nodo)
   {
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
-  if (patch->nombre[0])
-    snprintf(n->base.nombre, NAME_MAXLEN, "%s", patch->nombre);
-  if (patch->generador)
-    n->base.generador = patch->generador;
-  if (patch->pid)
-    n->base.pid = patch->pid;
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
+  if (reg->nombre[0])
+    snprintf(nodo->base.nombre, MAX_NOMBRE, "%s", reg->nombre);
+  if (reg->generador)
+    nodo->base.generador = reg->generador;
+  if (reg->pid)
+    nodo->base.pid = reg->pid;
+  int rc = guardar_arch();
+  pthread_mutex_unlock(&mtx);
   return rc;
 }
 
-int db_delete(int id)
+int eliminar_arch(int id)
 {
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
+  pthread_mutex_lock(&mtx);
+  nodo_t *n = obtener_producto_por_id(id);
   if (!n)
   {
-    pthread_mutex_unlock(&g_mtx);
+    pthread_mutex_unlock(&mtx);
     return -1;
   }
-  int ei = evt_index(n->evento);
+  int ei = obtener_producto_por_indice(n->evento);
   if (ei < 0)
     ei = 0;
-  list_remove(&g_queues[ei], n);
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
+  sacar_de_lista(&lista[ei], n);
+  for (size_t i = 0; i < indice_tam; i++)
+    if (indice[i] == nodo)
     {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
+      indice[i] = indice[indice_tam - 1];
+      indice_tam--;
       break;
     }
-  free(n);
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
+  free(nodo);
+  int rc = guardar_arch();
+  pthread_mutex_unlock(&mtx);
   return rc;
-}
-
-/* ====== Operaciones de cola ====== */
-int q_attend(const char *evento, rec_base_t *out)
-{
-  pthread_mutex_lock(&g_mtx);
-  int ei = evt_index(evento);
-  if (ei < 0)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  nodo_t *n = g_queues[ei].head;
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -2;
-  } /* cola vacía */
-  list_remove(&g_queues[ei], n);
-  /* remover del índice global y devolver */
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
-    {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
-      break;
-    }
-  if (out)
-    *out = n->base;
-  free(n);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
-}
-
-int q_leave(int id)
-{
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  int ei = evt_index(n->evento);
-  if (ei < 0)
-    ei = 0;
-  list_remove(&g_queues[ei], n);
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
-    {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
-      break;
-    }
-  free(n);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
-}
-
-int q_show(const char *evento, char *buf, size_t bufsz)
-{
-  if (!buf || bufsz < 4)
-    return -1;
-  pthread_mutex_lock(&g_mtx);
-  int ei = evt_index(evento);
-  if (ei < 0)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  size_t off = 0;
-  off += (size_t)snprintf(buf + off, bufsz - off, "RESULT %u\n", g_queues[ei].len);
-  for (nodo_t *p = g_queues[ei].head; p && off + 64 < bufsz; p = p->next)
-  {
-    off += (size_t)snprintf(buf + off, bufsz - off, "%d,%s,%s,%u\n",
-                            p->base.id, p->base.nombre, "Esperando", p->posicion);
-  }
-  off += (size_t)snprintf(buf + off, bufsz - off, "END\n");
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
 }
