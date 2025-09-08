@@ -7,15 +7,13 @@
 #include <unistd.h>
 #include <errno.h>
 
-static ssize_t escribir_todo(int fd, const void *buf, size_t n) 
-{
-    const char *p = (const char *)buf;
+/* escribe todo el buffer aunque write devuelva menos */
+static ssize_t escribir_todo(int fd, const void *buf, size_t n) {
+    const char *p = buf;
     size_t faltan = n;
-    while (faltan > 0) 
-    {
+    while (faltan > 0) {
         ssize_t r = write(fd, p, faltan);
-        if (r < 0) 
-        {
+        if (r < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
@@ -25,115 +23,68 @@ static ssize_t escribir_todo(int fd, const void *buf, size_t n)
     return (ssize_t)n;
 }
 
-static ssize_t leer_linea(int fd, char *buf, size_t cap) 
-{
+/* lee hasta '\n' o cap-1 */
+static ssize_t leer_linea(int fd, char *buf, size_t cap) {
     size_t i = 0;
-    ssize_t registro = 1;
-
-    while (i + 1 < cap && registro) 
-    {
-        char cad;
-        registro = read(fd, &cad, 1);
-        if (registro)
-        {
-            if (registro < 0) 
-            { 
-                if (errno == EINTR) 
-                    continue; 
-                return -1; 
-            }
-            if (cad == '\n') 
-            { 
-                buf[i] = '\0'; 
-                return (ssize_t)i; 
-            }
-            buf[i++] = c;
+    while (i + 1 < cap) {
+        char c;
+        ssize_t r = read(fd, &c, 1);
+        if (r == 0) break;      /* cerrado */
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
         }
+        if (c == '\n') break;
+        buf[i++] = c;
     }
     buf[i] = '\0';
     return (ssize_t)i;
 }
 
-static void quitar_nl(char *s) 
-{
-    size_t n = strlen(s);
-    if (n && s[n-1] == '\n') s[n-1] = '\0';
-}
+int main(int argc, char **argv) {
+    const char *host = "127.0.0.1";
+    int port = 5000;
 
-int main(int argc, char **argv)
-{
-    const char *direccion_host = "127.0.0.1";
-    int puerto = 5000;
-
-    for (int i = 1; i < argc; i++) 
-    {
-        if (!strcmp(argv[i], "-h") && i + 1 < argc)
-            direccion_host = argv[++i];
-        else if (!strcmp(argv[i], "-p") && i + 1 < argc)
-            puerto = atoi(argv[++i]);
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-h") && i + 1 < argc) host = argv[++i];
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) port = atoi(argv[++i]);
     }
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) 
-    { 
-        perror("socket"); 
-        return 1; 
-    }
+    if (sockfd < 0) { perror("socket"); return 1; }
 
-    struct sockaddr_in dir = {0};
-    dir.sin_family = AF_INET;
-    dir.sin_port = htons(puerto);
-    dir.sin_addr.s_addr = inet_addr(direccion_host);
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = inet_addr(host);
 
-    if (connect(sockfd, (struct sockaddr *)&dir, sizeof(dir)) < 0) 
-    {
+    if (connect(sockfd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         perror("connect");
         return 1;
     }
 
-    // Leer banner inicial del servidor (si lo hay)
-    char buffer[1024];
-    ssize_t n = leer_linea(sockfd, buffer, sizeof(buffer));
-    if (n > 0) 
-    {
-        fputs(buffer, stdout);
-        fputc('\n', stdout);
+    /* banner inicial */
+    char buf[1024];
+    if (leer_linea(sockfd, buf, sizeof(buf)) > 0) {
+        printf("%s\n", buf);
     }
 
-    // REPL: leo de stdin, envío al servidor y muestro respuesta
+    /* bucle interactivo */
     char linea[1024];
-    for (;;) 
-    {   
-        fputs("> ", stdout);
+    while (1) {
+        printf("> ");
         fflush(stdout);
-
-        if (!fgets(linea, sizeof(linea), stdin)) break;  // EOF o error
-        quitar_nl(linea);
-        if (linea[0] == '\0') continue;                  // línea vacía, seguir
-
-        // armo comando + '\n' para el servidor
+        if (!fgets(linea, sizeof(linea), stdin)) break;
         size_t len = strlen(linea);
-        linea[len] = '\n';
-        linea[len+1] = '\0';
-
-        if (escribir_todo(sockfd, linea, len + 1) < 0) 
-        {
+        if (len == 0) continue;
+        if (linea[len-1] != '\n') linea[len++] = '\n';
+        if (escribir_todo(sockfd, linea, len) < 0) {
             perror("write");
             break;
         }
-
-        // leer 1 línea de respuesta (ajusta si tu protocolo devuelve múltiples)
-        n = leer_linea(sockfd, buffer, sizeof(buffer));
-        if (n <= 0) 
-        {            // cerrado o error
-            if (n < 0) perror("read");
-            break;
-        }
-        fputs(buffer, stdout);
-        fputc('\n', stdout);
-
-        // si el servidor confirma cierre
-        if (!strcasecmp(linea, "QUIT\n")) break;
+        if (!strncasecmp(linea, "QUIT", 4)) break;
+        if (leer_linea(sockfd, buf, sizeof(buf)) <= 0) break;
+        printf("%s\n", buf);
     }
 
     close(sockfd);
