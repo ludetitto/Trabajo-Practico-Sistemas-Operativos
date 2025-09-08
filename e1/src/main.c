@@ -1,14 +1,7 @@
 // Punto de entrada: crea IPC, forkea N hijos (generadores), corre coordinador,
 // maneja señales, evita zombies y limpia todos los recursos. Con logs.
 
-#include "../include/common.h"
-#include "../include/ipc.h"
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-void generator_loop(int idx_generador);
-void coordinator_run(int total, const char *csvpath);
+#include "../include/main.h"
 
 static pid_t *g_pids = NULL;
 static int g_nprods = 0;

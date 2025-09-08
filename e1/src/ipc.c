@@ -1,7 +1,4 @@
 #include "../include/ipc.h"
-#include <string.h>
-#include <time.h>
-#include <errno.h>
 
 // ===== SHM globales =====
 cola_t *cola = NULL;
@@ -13,6 +10,8 @@ sem_t *sem_full = NULL;
 sem_t *sem_mutex = NULL;
 sem_t *sem_ids = NULL;
 
+// Crea/abre un objeto SHM con tamaño 'tam'.
+//   crear=1 => O_CREAT|O_RDWR + ftruncate; crear=0 => O_RDWR.
 static int crear_shm(const char *nombre, size_t tam, int crear)
 {
     int oflag = crear ? (O_CREAT | O_RDWR) : O_RDWR;
@@ -27,9 +26,10 @@ static int crear_shm(const char *nombre, size_t tam, int crear)
     return fd;
 }
 
+// Abre/crea todos los IPCs (cola + ids + semáforos)
 int ipc_abrir_todos(int crear, uint32_t total_ids)
 {
-    // SHM cola
+    // SHM cola (ring buffer)
     int fd = crear_shm(SHM_RING_NAME, sizeof(cola_t), crear);
     if (fd < 0)
         return -1;
@@ -40,7 +40,7 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
     if (crear)
         memset(cola, 0, sizeof(*cola));
 
-    // SHM ids (incluye metadatos RR)
+    // SHM ids (estado de IDs + metadatos RR)
     fd = crear_shm(SHM_IDS_NAME, sizeof(ids_t), crear);
     if (fd < 0)
         return -1;
@@ -57,7 +57,7 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
         ids_estado->turno = 0;
     }
 
-    // Semáforos
+    // Semáforos POSIX (unlink previos si creamos)
     if (crear)
     {
         sem_unlink(SEM_EMPTY_NAME);
@@ -75,6 +75,7 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
     return 0;
 }
 
+// Cierra y opcionalmente destruye todos los IPCs
 void ipc_cerrar_todos(int borrar_ahora)
 {
     if (cola)
@@ -102,14 +103,17 @@ void ipc_cerrar_todos(int borrar_ahora)
     }
 }
 
-// ==== Helpers RR y estado hijos ====
+// ===== Helpers de RR y estado de hijos =====
+
 void ipc_set_children(int nprods, const pid_t *pids)
 {
     if (!ids_estado)
         return;
+
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
+
     if (nprods > MAX_PRODS)
         nprods = MAX_PRODS;
     ids_estado->nprods = nprods;
@@ -119,6 +123,7 @@ void ipc_set_children(int nprods, const pid_t *pids)
         ids_estado->alive[i] = 1;
     }
     ids_estado->turno = 0;
+
     sem_post(sem_ids);
 }
 
@@ -126,9 +131,11 @@ void ipc_mark_dead(pid_t pid)
 {
     if (!ids_estado)
         return;
+
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
+
     for (int i = 0; i < ids_estado->nprods; ++i)
     {
         if (ids_estado->pid[i] == pid)
@@ -137,51 +144,58 @@ void ipc_mark_dead(pid_t pid)
             break;
         }
     }
+
     sem_post(sem_ids);
 }
 
 uint32_t ipc_restantes(void)
 {
-    uint32_t r;
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
-    r = ids_estado->restantes;
+    uint32_t r = ids_estado->restantes;
     sem_post(sem_ids);
     return r;
 }
 
-// ==== Ring buffer ====
+// ===== Ring buffer =====
+
 void push(const registro_t *r)
 {
+    // Espera espacio libre y exclusión
     while (sem_wait(sem_empty) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
     while (sem_wait(sem_mutex) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
 
+    // Escribe en la cola
     cola->buffer[cola->ultimo] = *r;
     cola->ultimo = (cola->ultimo + 1) % COLA_CAP;
     cola->cant_elem_ocupados++;
 
+    // Libera exclusión y notifica que hay datos
     sem_post(sem_mutex);
     sem_post(sem_full);
 }
 
 int pop(registro_t *r)
 {
+    // Espera datos y exclusión
     while (sem_wait(sem_full) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
     while (sem_wait(sem_mutex) == -1 && errno == EINTR)
-    {
+    { /* retry */
     }
 
+    // Lee desde la cola
     *r = cola->buffer[cola->primero];
     cola->primero = (cola->primero + 1) % COLA_CAP;
     cola->cant_elem_ocupados--;
 
+    // Libera exclusión y notifica espacio libre
     sem_post(sem_mutex);
     sem_post(sem_empty);
     return 0;
@@ -189,6 +203,7 @@ int pop(registro_t *r)
 
 int pop_timeout(registro_t *r, int timeout_ms)
 {
+    // Calcula deadline absoluto (CLOCK_REALTIME)
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
         return -1;
@@ -201,16 +216,21 @@ int pop_timeout(registro_t *r, int timeout_ms)
         ts.tv_nsec -= 1000000000L;
     }
 
+    // Espera con timeout por elementos
     int rc;
     do
     {
         rc = sem_timedwait(sem_full, &ts);
     } while (rc == -1 && errno == EINTR);
-    if (rc == -1)
-        return (errno == ETIMEDOUT) ? 1 : -1;
 
-    while (sem_wait(sem_mutex) == -1 && errno == EINTR)
+    if (rc == -1)
     {
+        return (errno == ETIMEDOUT) ? 1 : -1;
+    }
+
+    // Toma exclusión y consume
+    while (sem_wait(sem_mutex) == -1 && errno == EINTR)
+    { /* retry */
     }
 
     *r = cola->buffer[cola->primero];
@@ -222,25 +242,27 @@ int pop_timeout(registro_t *r, int timeout_ms)
     return 0;
 }
 
-// ==== IDs: Round-Robin estricto (salta muertos) ====
+// ===== IDs: Round-Robin estricto (salta hijos muertos) =====
 // idx = índice lógico del generador [0..nprods-1]
-// Devuelve 0 si asignó; 1 si ya no quedan IDs.
+// return: 0=asignó; 1=no quedan IDs
 int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
 {
     for (;;)
     {
+        // Toma lock del estado de IDs
         while (sem_wait(sem_ids) == -1 && errno == EINTR)
-        {
+        { /* retry */
         }
 
+        // ¿No quedan IDs?
         if (ids_estado->restantes == 0)
         {
             sem_post(sem_ids);
             *base = *cant = 0;
-            return 1; // no quedan
+            return 1;
         }
 
-        // avanzar turno si apunta a muerto
+        // Avanza turno si señala a un hijo muerto
         int giros = 0;
         while (ids_estado->nprods > 0 &&
                ids_estado->alive[ids_estado->turno] == 0 &&
@@ -255,13 +277,15 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             ids_estado->turno == idx &&
             ids_estado->alive[idx])
         {
+
             uint32_t give = (ids_estado->restantes > 10) ? 10 : ids_estado->restantes;
             *base = ids_estado->proximo;
             *cant = give;
+
             ids_estado->proximo += give;
             ids_estado->restantes -= give;
 
-            // siguiente turno, saltando muertos
+            // Turno al siguiente vivo (si quedan IDs)
             if (ids_estado->nprods > 0)
             {
                 do
@@ -275,8 +299,8 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             return 0;
         }
 
+        // No es mi turno: suelta lock y espera breve
         sem_post(sem_ids);
-        // Espera breve para no quemar CPU si no es mi turno
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 2000000L}; // 2ms
         nanosleep(&ts, NULL);
     }

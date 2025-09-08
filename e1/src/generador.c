@@ -1,21 +1,17 @@
 // Generador: pide bloques de 10 IDs en RR estricto y produce 1 registro por ID.
 // Agrega logs en consola y un delay aleatorio de 100–1000 ms entre registros.
 
-#include "../include/common.h"
-#include "../include/ipc.h"
-#include "../include/randrec.h"
-#include <signal.h>
-#include <sys/prctl.h>
-#include <unistd.h>
+#include "../include/generador.h"
 
 static volatile sig_atomic_t g_stop = 0;
+
 static void on_term(int s)
 {
     (void)s;
     g_stop = 1;
 }
 
-// reemplaza la versión con usleep
+// reemplaza la versión con usleep -> nanosleep portable
 static inline void sleep_ms(int ms)
 {
     if (ms <= 0)
