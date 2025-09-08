@@ -1,9 +1,10 @@
 // include/ipc.h
 // -----------------------------------------------------------------------------
-// Funciones relacionadas con la creación/apertura de IPC:
-//  - SHM POSIX (shm_open/ftruncate/mmap)
-//  - Semáforos POSIX nombrados (sem_open)
-//  - unlink/close de recursos
+// Propósito:
+// - Encapsula la creación/apertura/limpieza de recursos IPC:
+//   * SHM POSIX (shm_open/ftruncate/mmap)
+//   * Semáforos POSIX nombrados (sem_open/sem_unlink)
+// - Evita repetir lógica y centraliza el manejo de errores del SO.
 // -----------------------------------------------------------------------------
 
 #ifndef IPC_H

@@ -1,6 +1,8 @@
 // src/ipc.c
 // -----------------------------------------------------------------------------
-// SHM POSIX + Semáforos POSIX: creación, mapeo, apertura y unlink.
+// Propósito del archivo:
+// - Encapsular la creación, mapeo, apertura y unlink de SHM y semáforos POSIX.
+// - Deja el main y el resto de módulos con menos "ruido" de syscalls.
 // -----------------------------------------------------------------------------
 
 #include "ipc.h"

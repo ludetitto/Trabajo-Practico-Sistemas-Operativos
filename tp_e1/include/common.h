@@ -1,10 +1,10 @@
 // include/common.h
 // -----------------------------------------------------------------------------
-// Definiciones y utilidades comunes para todo el proyecto.
-// Se concentran aquí para:
-//  - Evitar duplicación de includes y constantes.
-//  - Exponer tipos compartidos (record_t, names_t, sems_t).
-//  - Declarar funciones de ayuda (die, perr, rand_seed, fill_random_record, gen_names).
+// Propósito:
+// - Tipos, constantes y utilidades comunes a todo el proyecto.
+// - Plan de negocio e-commerce: CSV -> id,generador,pid,nombreProducto,precio,stock
+// - Provee record_t (estructura de un registro), names_t (nombres POSIX),
+//   sems_t (handle de semáforos) y helpers (errores, RNG, generación de registros).
 // -----------------------------------------------------------------------------
 
 #ifndef COMMON_H
@@ -26,46 +26,46 @@
 #include <errno.h>
 #include <semaphore.h>
 #include <signal.h>
+#include <locale.h>   // para asegurar punto decimal en CSV
 
 // -----------------------------------------------------------------------------
-// Parámetros por defecto y tamaños de campos de ejemplo
+// Parámetros por defecto y tamaños apropiados
 // -----------------------------------------------------------------------------
-#define DEFAULT_BUF_CAP 64   // capacidad por defecto del ring buffer
-#define MAX_NAME        60   // tamaño de nombree evento
-#define MAX_EST        12   // tamaño de campo "estado" 
+#define DEFAULT_BUF_CAP 8        // capacidad por defecto del ring buffer
+#define MAX_NAME        40        // tamaño para nombre del producto
 
 // -----------------------------------------------------------------------------
-// Estructura de registro: lo que viaja por SHM y se persiste en CSV
-// Requisito: ID debe ir primero en el CSV (lo cumplimos al imprimir).
+// Estructura de registro que viaja por SHM y se persiste en CSV.
+// Requisito: id es la PRIMERA columna del CSV.
 // -----------------------------------------------------------------------------
 typedef struct {
-    int  id;                      // Requisito: primera columna del CSV, asignado por el coordinador
-    int  prioridad;               // posición actual en la cola
-    char nombreUser[MAX_NAME];    // nombre de la persona que va a asistir al evento
-    char evento[MAX_NAME];        // nombre de evento a asitir
-    char estado[MAX_EST];         // "Esperando", "Atendido" o "Cancelado"
+    int    id;                    // 1ra col. del CSV (identificador único global)
+    int    generador;             // índice lógico del generador (0..N-1)
+    pid_t  pid;                   // PID del proceso generador
+    char   nombreProducto[MAX_NAME];
+    double precio;                // precio unitario (ej.: 159999.99)
+    int    stock;                 // unidades disponibles (>=0)
 } record_t;
 
 // -----------------------------------------------------------------------------
 // Nombres de objetos POSIX (SHM + semáforos)
-// - Se generan únicos por ejecución (PID + random) para evitar colisiones.
 // -----------------------------------------------------------------------------
 typedef struct {
     char shm_name[64];
     char sem_empty_name[64];
     char sem_full_name[64];
     char sem_mutex_name[64];
-    char sem_id_name[64];
+    char sem_id_name[64];   // serializa asignación de bloques de IDs
 } names_t;
 
 // -----------------------------------------------------------------------------
 // Handle de semáforos POSIX
 // -----------------------------------------------------------------------------
 typedef struct {
-    sem_t *empty;   // cuenta de lugares libres en la cola
-    sem_t *full;    // cuenta de elementos disponibles
-    sem_t *mutex;   // exclusión mutua para sección crítica del buffer
-    sem_t *idlock;  // exclusión para asignación de bloques de IDs
+    sem_t *empty;   // lugares libres en la cola
+    sem_t *full;    // elementos disponibles
+    sem_t *mutex;   // exclusión mutua del buffer
+    sem_t *idlock;  // exclusión para asignación de IDs
 } sems_t;
 
 // -----------------------------------------------------------------------------
@@ -75,10 +75,14 @@ void   die(const char *fmt, ...) __attribute__((format(printf,1,2)));
 void   perr(const char *msg);
 void   rand_seed(void);
 
-// Genera un registro de ejemplo consistente con la regla de negocio.
-void   fill_random_record(record_t *r, int id, int prioridad, bool mark_first_attended);
+// Genera un registro de ejemplo coherente con el negocio e-commerce.
+// Nota: 'generador' y 'pid' los setea el productor antes de enviar.
+void   fill_random_product_fields(record_t *r);
 
 // Genera nombres únicos para recursos POSIX (evita colisiones entre corridas).
 void   gen_names(names_t *n);
+//comando de ayuda
+void   print_help_examples(const char *prog);
+
 
 #endif // COMMON_H

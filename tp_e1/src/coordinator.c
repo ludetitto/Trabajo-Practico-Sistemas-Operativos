@@ -1,9 +1,12 @@
 // src/coordinator.c
 // -----------------------------------------------------------------------------
-// COORDINADOR:
-//  - Abre SHM y semáforos.
-//  - Crea CSV y escribe encabezado (ID primero, luego prioridad, etc.).
-//  - Extrae EXACTAMENTE 'total' registros del ring y los persiste en orden de arribo.
+// Propósito del archivo:
+// - Implementa la rutina del COORDINADOR (consumidor).
+// - Flujo:
+//   1) Abre SHM y semáforos.
+//   2) Abre el CSV, escribe encabezado (ID primero).
+//   3) Extrae EXACTAMENTE 'total' registros del ring (ring_pop) y los vuelca
+//      al CSV en el orden de arribo (no es necesario ordenar por ID).
 // -----------------------------------------------------------------------------
 
 #include "coordinator.h"
@@ -20,17 +23,22 @@ void coordinator_run(const names_t *nn, int total, const char *csv_path) {
     shm_region_t *shm = (shm_region_t*) map_shm(fd, (size_t)st.st_size);
     sems_t sems = open_sems(nn);
 
+    // Aseguramos punto decimal en el CSV
+    setlocale(LC_NUMERIC, "C");
+
     FILE *f = fopen(csv_path, "w");
     if (!f) perr("fopen csv");
 
-    // Encabezado: ID primero (requisito), luego campos de la regla de negocio
-    fprintf(f, "id,prioridad,nombreUser,evento,estado\n");
+    // Encabezado: id,generador,pid,nombreProducto,precio,stock
+    fprintf(f, "id,generador,pid,nombreProducto,precio,stock\n");
 
     for (int i = 0; i < total; ++i) {
         record_t r;
         ring_pop(shm, &sems, &r);
-        fprintf(f, "%d,%d,%s,%s,%s\n",
-                r.id, r.prioridad, r.nombreUser, r.evento, r.estado);
+        // Pausa aleatoria de 10 a 50 milisegundos
+        usleep(1000 * (10 + rand()%40));
+        fprintf(f, "%d,%d,%d,%s,%.2f,%d\n",
+                r.id, r.generador, (int)r.pid, r.nombreProducto, r.precio, r.stock);
     }
 
     fflush(f);
