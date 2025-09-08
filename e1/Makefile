@@ -20,7 +20,7 @@ SRCS = \
   $(SRC_DIR)/randrec.c
 
 OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
-BIN  = $(BIN_DIR)/tp_e1
+BIN  = $(BIN_DIR)/main
 
 .PHONY: all clean run demo validate
 
