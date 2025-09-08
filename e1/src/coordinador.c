@@ -14,9 +14,6 @@ static void comando_coordinador(const char *prog)
     fprintf(stderr,
             "Uso: %s -n <generadores> -t <total_registros> -f <csv>\n", prog); // Help command
 }
-// El coordinador recibe como argumentos:
-// -n <generadores>: cantidad de procesos generadores que se van a usar (no se usa en este programa, pero se pasa a los generadores)
-// -t <total_registros>: cantidad total de registros a generar (entre todos los generadores)
 
 int main(int argc, char **argv)
 { // Recibe como argumentos: -n <generadores> -t <total_registros> -f <csv>
@@ -48,18 +45,9 @@ int main(int argc, char **argv)
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig); // Manejo de señales.
-                             // Sirve para que al presionar Ctrl+C se cierre correctamente
-    // Funciona como un "coordinador", abre los IPCs y el archivo CSV
-    // y va leyendo del buffer circular e imprimiendo en el CSV hasta que
-    // se hayan escrito "total" registros o se reciba una señal de terminación
 
     if (ipc_abrir_todos(1, (uint32_t)total) < 0)
-        matar("ipc_abrir_todos(crear) falló al ejecutarse."); // Abre todos los IPCs, creando si es necesario
-    // El segundo parámetro es la cantidad total de IDs que se van a pedir
-    // (sirve para inicializar el estado de los IDs)
-    // Si ya estaban creados, no los toca
-    // Si no, los crea y los inicializa
-    // Si falla, termina el programa
+        matar("ipc_abrir_todos(crear) falló al ejecutarse.");
 
     f = abrir_csv(csvpath, 1);
     if (!f)
@@ -73,17 +61,23 @@ int main(int argc, char **argv)
         registro_t r;
         int rc = pop_timeout(&r, TIMEOUT_MS);
 
-        if (!rc) 
+        if (!rc)
         {
             // llegó un registro
             escribir_csv(f, &r);
+            // LOG del coordinador: muestra id y qué generador lo produjo
+            printf("[COORD] escrito ID=%u (gen=%d, pid=%d)\n", r.id, r.generador, (int)r.pid);
+            fflush(stdout);
+
             escrito++;
-        } else if (rc == 1) 
+        }
+        else if (rc == 1)
         {
             // timeout
             fprintf(stderr, "[coordinador] %d ms sin recibir registros. Finalizo.\n", TIMEOUT_MS);
             salir = 1;
-        } else 
+        }
+        else
         {
             // error en semáforo
             perror("[coordinador] pop_timeout");

@@ -46,11 +46,19 @@ int main(int argc, char **argv)
             for (uint32_t i = 0; i < cont && cant_producida < cant_a_producir; i++)
             { // para cada ID del bloque
                 registro_t r;
-                generar_randrec(&r, base + i, idx_generador);                              // genero un registro aleatorio
-                push(&r);                                                                  // lo pongo en el buffer circular (bloquea si está lleno)
-                /* struct timespec ts = {.tv_sec = 0, .tv_nsec = (rand() % 5 + 1) * 1000000}; // 1–5 ms
-                nanosleep(&ts, NULL); */
-                sleep(3);
+                generar_randrec(&r, base + i, idx_generador); // genero un registro aleatorio
+
+                // LOG del generador: muestra id y qué generador lo produjo
+                printf("[GEN %d] generado ID=%u\n", idx_generador, r.id);
+                fflush(stdout);
+
+                push(&r); // lo pongo en el buffer circular (bloquea si está lleno)
+
+                /* Delay: si querés menos, reemplazá por nanosleep de 100–1000 ms */
+                /* struct timespec ts = {.tv_sec = 0, .tv_nsec = (rand() % 901 + 100) * 1000000L};
+                   nanosleep(&ts, NULL); */
+                sleep(1);
+
                 cant_producida++;
             }
         }
