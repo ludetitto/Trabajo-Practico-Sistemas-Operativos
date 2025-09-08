@@ -12,7 +12,7 @@
 #include <arpa/inet.h>
 #include "../include/csvdb.h"
 
-int proto_handle_line(int fd, const char *line);
+int procesar_linea_protocolo(int fd, const char *linea);
 
 /* estado de transacción (lock exclusivo sobre el CSV) */
 static int csv_fd = -1;
@@ -51,16 +51,16 @@ static void *iniciar_thread_cliente(void *arg)
 {
   int cfd = (int)(intptr_t)arg;
   FILE *in = fdopen(dup(cfd), "r");
-  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [producto=..] | UPDATE ... | DELETE id=.. | BEGIN | COMMIT | ROLLBACK | QUIT\n");
-  char line[1024];
-  while (fgets(line, sizeof(line), in))
+  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [producto=..] | UPDATE ... | DELETE <id> | BEGIN | COMMIT | ROLLBACK | QUIT\n");
+  char linea[1024];
+  while (fgets(linea, sizeof(linea), in))
   {
-    if (!strncasecmp(line, "QUIT", 4))
+    if (!strncasecmp(linea, "QUIT", 4))
     {
       dprintf(cfd, "BYE\n");
       break;
     }
-    if (!strncasecmp(line, "BEGIN", 5))
+    if (!strncasecmp(linea, "BEGIN", 5))
     {
       if (intentar_iniciar_tx() == 0)
         dprintf(cfd, "OK\n");
@@ -68,13 +68,13 @@ static void *iniciar_thread_cliente(void *arg)
         dprintf(cfd, "ERR TX_ACTIVE\n");
       continue;
     }
-    if (!strncasecmp(line, "COMMIT", 6))
+    if (!strncasecmp(linea, "COMMIT", 6))
     {
       finalizar_tx();
       dprintf(cfd, "OK\n");
       continue;
     }
-    if (!strncasecmp(line, "ROLLBACK", 8))
+    if (!strncasecmp(linea, "ROLLBACK", 8))
     {
       finalizar_tx();
       dprintf(cfd, "OK\n");
@@ -91,7 +91,7 @@ static void *iniciar_thread_cliente(void *arg)
       continue;
     }
 
-    proto_handle_line(cfd, line);
+    procesar_linea_protocolo(cfd, linea);
   }
   fclose(in);
   close(cfd);
@@ -103,7 +103,7 @@ int main(int argc, char **argv)
   const char *host = "127.0.0.1";
   int port = 5000;
   int N = 4, M = 16;
-  const char *csv = "../e1/db.csv";
+  const char *csv = "../e1/productos.csv";
   for (int i = 1; i < argc; i++)
   {
     if (!strcmp(argv[i], "-H") && i + 1 < argc)

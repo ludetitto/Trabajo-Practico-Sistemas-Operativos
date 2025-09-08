@@ -9,44 +9,59 @@
 #include "../include/proto.h"
 #include "../include/csvdb.h"
 
-static void rstrip(char *s) {
+static void rstrip(char *s) // Permite eliminar espacios en blanco a la derecha.
+{
     size_t n = strlen(s);
-    while (n && isspace((unsigned char)s[n-1])) s[--n] = 0;
+    while (n && isspace((unsigned char)s[n-1])) 
+        s[--n] = 0;
 }
-static void lskip(const char **ps) {
+static void lskip(const char **ps) // Permite eliminar espacios en blanco a la izquierda.
+{
     const char *p = *ps;
-    while (*p && isspace((unsigned char)*p)) p++;
+    while (*p && isspace((unsigned char)*p)) 
+        p++;
     *ps = p;
 }
-static void up(char *s) {
+static void upper(char *s) 
+{
     for (; *s; s++) *s = (char)toupper((unsigned char)*s);
 }
 
-void proto_handle_line(int cfd, const char *line) {
-    char buf[1024];
-    strncpy(buf, line, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = 0;
+void procesar_linea_protocolo(int cfd, const char *linea) 
+{
+    char buf[1024], cmd[32] = {0};
+    const char *pbuf;
+    int i = 0;
+    strncpy(buf, linea, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
     rstrip(buf);
 
-    const char *p = buf;
-    lskip(&p);
-    if (!*p) { dprintf(cfd, "ERR EMPTY\n"); return; }
-
-    char cmd[32] = {0};
-    int i = 0;
-    while (p[i] && !isspace((unsigned char)p[i]) && i < (int)sizeof(cmd)-1) {
-        cmd[i] = p[i]; i++;
+    pbuf = buf;
+    lskip(&pbuf);
+    if (!*pbuf) 
+    { 
+        dprintf(cfd, "ERR EMPTY\n"); 
+        return; 
     }
-    cmd[i] = 0;
-    up(cmd);
-    p += i; lskip(&p);
+    
+    while (pbuf[i] && !isspace((unsigned char)pbuf[i]) && i < (int)sizeof(cmd) - 1) 
+    {
+        cmd[i] = pbuf[i]; 
+        i++;
+    }
 
-    if (!strcmp(cmd, "PING")) {
+    cmd[i] = 0;
+    upper(cmd);
+    pbuf += i; lskip(&pbuf);
+
+    if (!strcmp(cmd, "PING")) 
+    {
         dprintf(cfd, "OK\n");
         return;
     }
-    if (!strcmp(cmd, "GET")) {
-        int id = atoi(p);
+    if (!strcmp(cmd, "GET")) 
+    {
+        int id = atoi(pbuf);
         registro_t r;
         if (buscar_id_arch(id, &r) == 0)
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n",
@@ -55,43 +70,70 @@ void proto_handle_line(int cfd, const char *line) {
             dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
-    if (!strcmp(cmd, "ADD")) {
+    if (!strcmp(cmd, "ADD")) 
+    {
         registro_t r = {0};
-        char nombre[NOMBRE_MAX]; float precio = 0; int stock = 0;
-        if (sscanf(p, "%63[^,],%f,%d", nombre, &precio, &stock) < 3) {
-            dprintf(cfd, "ERR ARG\n"); return;
+        char nombre[NOMBRE_MAXLEN]; 
+        float precio = 0; 
+        int stock = 0;
+        if (sscanf(pbuf, "%63[^,],%f,%d", nombre, &precio, &stock) < 3) 
+        {
+            dprintf(cfd, "ERR ARG\n"); 
+            return;
         }
-        strncpy(r.nombre, nombre, NOMBRE_MAX-1);
+        strncpy(r.nombre, nombre, NOMBRE_MAXLEN - 1);
+        r.nombre[NOMBRE_MAXLEN - 1] = '\0';
         r.precio = precio;
         r.stock = stock;
         snprintf(r.timestamp, sizeof(r.timestamp), "now"); // TODO: fecha real
         r.borrado = false;
-        if (agregar_arch(&r) == 0) dprintf(cfd, "OK\n");
-        else dprintf(cfd, "ERR IO\n");
+
+        if (!agregar_arch(&r)) 
+            dprintf(cfd, "OK\n");
+        else 
+            dprintf(cfd, "ERR IO\n");
         return;
     }
-    if (!strcmp(cmd, "UPDATE")) {
-        int id; char nombre[NOMBRE_MAX]; float precio; int stock;
-        if (sscanf(p, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) {
-            dprintf(cfd, "ERR ARG\n"); return;
+    if (!strcmp(cmd, "UPDATE")) 
+    {
+        int id; char nombre[NOMBRE_MAXLEN]; 
+        float precio; 
+        int stock;
+
+        if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) 
+        {
+            dprintf(cfd, "ERR ARG\n"); 
+            return;
         }
         registro_t patch = {0};
         patch.id = id;
-        strncpy(patch.nombre, nombre, NOMBRE_MAX-1);
+        memcpy(patch.nombre, nombre, NOMBRE_MAXLEN - 1);
+        patch.nombre[NOMBRE_MAXLEN - 1] = '\0';
         patch.precio = precio;
         patch.stock = stock;
-        if (actualizar_arch(&patch) == 0) dprintf(cfd, "OK\n");
-        else dprintf(cfd, "ERR NOT_FOUND\n");
+
+        if (!actualizar_arch(&patch)) 
+            dprintf(cfd, "OK\n");
+        else 
+            dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
-    if (!strcmp(cmd, "DELETE")) {
-        int id = atoi(p);
-        if (id <= 0) { dprintf(cfd, "ERR ARG\n"); return; }
-        if (eliminar_arch(id) == 0) dprintf(cfd, "OK\n");
-        else dprintf(cfd, "ERR NOT_FOUND\n");
+    if (!strcmp(cmd, "DELETE")) 
+    {
+        int id = atoi(pbuf);
+        if (id <= 0)
+        {
+            dprintf(cfd, "ERR ARG\n"); 
+            return; 
+        }
+        if (!eliminar_arch(id))
+            dprintf(cfd, "OK\n");
+        else 
+            dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
-    if (!strcmp(cmd, "QUIT")) {
+    if (!strcmp(cmd, "QUIT")) 
+    {
         dprintf(cfd, "BYE\n");
         return;
     }
