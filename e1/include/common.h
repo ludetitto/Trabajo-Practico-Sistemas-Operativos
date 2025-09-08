@@ -31,15 +31,19 @@
 #define SEM_MUTEX_NAME "/tp_sem_mutex" // semáforo mutex para buffer circular
 #define SEM_IDS_NAME "/tp_sem_ids"     // semáforo mutex para estado de IDs
 
+#ifndef MAX_PRODS
+#define MAX_PRODS 64
+#endif
+
 typedef struct
 {
     uint32_t id;
     int generador;
     pid_t pid;
     char nombre[NOMBRE_MAXLEN];
-    float precio; // [1000.00, 100000.00]
+    float precio;   // [1000.00, 100000.00]
     uint32_t stock; // [0, 100]
-    char timestamp[TIMESTAMP_MAXLEN]; // timestamp
+    char timestamp[TIMESTAMP_MAXLEN];
     bool borrado;
 } registro_t;
 
@@ -51,10 +55,18 @@ typedef struct
     uint32_t cant_elem_ocupados; // elementos ocupados
 } cola_t;
 
+/* ===== ids_t EXTENDIDO para RR estricto y tolerancia a fallos =====
+   - única fuente de verdad para asignación de IDs
+   - metadatos para round-robin y estado de hijos
+*/
 typedef struct
 {
-    uint32_t proximo;   // siguiente ID a entregar
-    uint32_t restantes; // IDs que faltan globalmente
+    uint32_t proximo;         // siguiente ID a entregar (arranca en 1)
+    uint32_t restantes;       // IDs que faltan globalmente
+    int nprods;               // cantidad total de generadores
+    int turno;                // índice RR actual [0..nprods-1]
+    pid_t pid[MAX_PRODS];     // PID de cada generador
+    uint8_t alive[MAX_PRODS]; // 1 = vivo, 0 = muerto (lo marca el padre)
 } ids_t;
 
 static inline void matar(const char *fmt, ...)

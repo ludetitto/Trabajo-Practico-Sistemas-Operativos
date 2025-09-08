@@ -1,91 +1,70 @@
+// Coordinador: escribe encabezado y consume 'total' registros.
+// Usa pop_timeout corto para reaccionar a señales/caídas y loguea cada escritura.
+
 #include "../include/common.h"
 #include "../include/ipc.h"
 #include "../include/csv.h"
+#include <locale.h>
+#include <signal.h>
 
-static volatile sig_atomic_t parar = 0; // traducción: "detener"
-static void on_sig(int s)
+static volatile sig_atomic_t g_stop = 0;
+static void on_term(int s)
 {
     (void)s;
-    parar = 1;
-} // Handler de señales
-
-static void comando_coordinador(const char *prog)
-{
-    fprintf(stderr,
-            "Uso: %s -n <generadores> -t <total_registros> -f <csv>\n", prog); // Help command
+    g_stop = 1;
 }
 
-int main(int argc, char **argv)
-{ // Recibe como argumentos: -n <generadores> -t <total_registros> -f <csv>
-    int cant_gen = -1, total = -1, salir = 0;
-    const char *csvpath = NULL;
-    FILE *f;
-    uint32_t escrito = 0;
-    const int TIMEOUT_MS = 10000;
+void coordinator_run(int total, const char *csvpath)
+{
+    setlocale(LC_NUMERIC, "C");
 
-    for (int i = 1; i < argc; i++)
-    { // Parseo de argumentos
-        if (!strcmp(argv[i], "-n") && i + 1 < argc)
-            cant_gen = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-t") && i + 1 < argc)
-            total = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-f") && i + 1 < argc)
-            csvpath = argv[++i];
-        else if (!strcmp(argv[i], "--help"))
-        {
-            comando_coordinador(argv[0]);
-            return 0;
-        }
-    }
-    if (cant_gen <= 0 || total <= 0 || !csvpath)
-    {
-        comando_coordinador(argv[0]);
-        return 1;
-    } // Validación de argumentos
+    struct sigaction sa = {0};
+    sa.sa_handler = on_term;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
 
-    signal(SIGINT, on_sig);
-    signal(SIGTERM, on_sig); // Manejo de señales.
-
-    if (ipc_abrir_todos(1, (uint32_t)total) < 0)
-        matar("ipc_abrir_todos(crear) falló al ejecutarse.");
-
-    f = abrir_csv(csvpath, 1);
+    FILE *f = abrir_csv(csvpath, 1);
     if (!f)
-    {
-        ipc_cerrar_todos(1);
-        matar("No pude abrir CSV: %s", csvpath);
-    }
+        matar("[COORD] No pude abrir CSV: %s", csvpath);
 
-    while (!parar && escrito < (uint32_t)total && !salir)
+    const int SLICE_MS = 200; // slices cortos para refrescar la consola seguido
+    uint32_t escrito = 0;
+
+    fprintf(stdout, "[COORD] escribiendo en '%s' (total=%d)\n", csvpath, total);
+    fflush(stdout);
+
+    while (!g_stop && escrito < (uint32_t)total)
     {
         registro_t r;
-        int rc = pop_timeout(&r, TIMEOUT_MS);
-
-        if (!rc)
+        int rc = pop_timeout(&r, SLICE_MS);
+        if (rc == 0)
         {
-            // llegó un registro
             escribir_csv(f, &r);
-            // LOG del coordinador: muestra id y qué generador lo produjo
-            printf("[COORD] escrito ID=%u (gen=%d, pid=%d)\n", r.id, r.generador, (int)r.pid);
+            ++escrito;
+            fprintf(stdout, "[COORD] CSV <- ID=%u (gen=%d, pid=%d) [%u/%d]\n",
+                    r.id, r.generador, (int)r.pid, escrito, total);
             fflush(stdout);
-
-            escrito++;
         }
         else if (rc == 1)
         {
-            // timeout
-            fprintf(stderr, "[coordinador] %d ms sin recibir registros. Finalizo.\n", TIMEOUT_MS);
-            salir = 1;
+            // timeout: si no quedan IDs por asignar, seguimos “barriendo” el ring
+            if (ipc_restantes() == 0)
+            {
+                // no hacemos nada; volvemos a intentar hasta completar 'total' o señal
+                continue;
+            }
         }
         else
         {
-            // error en semáforo
-            perror("[coordinador] pop_timeout");
-            salir = 1;
+            perror("[COORD] pop_timeout");
+            break;
         }
     }
 
+    fprintf(stdout, "[COORD] finalizado (%u/%d). CSV listo.\n", escrito, total);
+    fflush(stdout);
+
     cerrar_csv(f);
-    ipc_cerrar_todos(1); // liberar recursos
-    return 0;
 }
