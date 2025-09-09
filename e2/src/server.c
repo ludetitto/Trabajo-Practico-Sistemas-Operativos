@@ -125,7 +125,7 @@ int main(int argc, char **argv)
   const char *host = "127.0.0.1";
   int port = 5000;
   int N = 4, M = 16;
-  const char *csv = "../e1/productos.csv";
+  const char *csv = "../e1/db.csv";
   for (int i = 1; i < argc; i++)
   {
     if (!strcmp(argv[i], "-H") && i + 1 < argc)

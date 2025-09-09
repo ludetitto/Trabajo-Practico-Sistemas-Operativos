@@ -53,8 +53,8 @@ run_server: all
 	@if [ ! -f ../e1/productos.csv ]; then \
 	  echo "Falta ../e1/productos.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
 	fi
-	@echo ">>> Server en 127.0.0.1:5000 usando ../e1/productos.csv"
-	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/productos.csv
+	@echo ">>> Server en 127.0.0.1:5000 usando ../db.csv"
+	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../db.csv
 
 # Cliente interactivo
 client: all
