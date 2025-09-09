@@ -36,7 +36,8 @@ void coordinator_run(const names_t *nn, int total, const char *csv_path) {
         record_t r;
         ring_pop(shm, &sems, &r);
         // Pausa aleatoria de 10 a 50 milisegundos
-        usleep(1000 * (10 + rand()%40));
+        usleep(10000 * (10 + rand()%40));
+        fprintf(stderr, "[C] pop id=%d\n", r.id);
         fprintf(f, "%d,%d,%d,%s,%.2f,%d\n",
                 r.id, r.generador, (int)r.pid, r.nombreProducto, r.precio, r.stock);
     }

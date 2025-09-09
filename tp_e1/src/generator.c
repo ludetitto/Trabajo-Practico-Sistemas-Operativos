@@ -46,6 +46,9 @@ void generator_loop(const names_t *nn, int generador_index) {
 
             fill_random_product_fields(&r);  // nombre, precio, stock
             ring_push(shm, &sems, &r);       // enviar UN registro por vez
+            usleep(1000 * (10 + rand()%40)); // 10..49 ms (solo para debug)
+            fprintf(stderr, "[G%d pid=%d] push id=%d\n", generador_index,(int)getpid(), r.id);
+
         }
     }
 
