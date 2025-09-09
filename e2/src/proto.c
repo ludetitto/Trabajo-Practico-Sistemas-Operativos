@@ -31,7 +31,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
 {
     char buf[1024], cmd[32] = {0};
     const char *pbuf;
-    int i = 0;
+    int i = 0, local_tx_active, local_tx_owner;
     strncpy(buf, linea, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     rstrip(buf);
@@ -59,23 +59,63 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         dprintf(cfd, "OK\n");
         return;
     }
+
     if (!strcmp(cmd, "GET")) 
     {
         int id = atoi(pbuf);
         registro_t r;
-        if (buscar_id_arch(id, &r) == 0)
+
+        pthread_mutex_lock(&tx_mtx);
+        local_tx_active = tx_active;
+        local_tx_owner = tx_owner;
+        pthread_mutex_unlock(&tx_mtx);
+
+        if(!local_tx_active)
+        {
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+            return;
+        }
+        
+        if (local_tx_active && local_tx_owner != cfd) 
+        {
+            dprintf(cfd, "ERR TX_ACTIVE\n");
+            return;
+        }
+
+        if (!buscar_id_arch(id, &r))
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n",
                     r.id, r.nombre, r.precio, r.stock, r.timestamp);
         else
             dprintf(cfd, "ERR NOT_FOUND\n");
+        
         return;
     }
+
     if (!strcmp(cmd, "ADD")) 
     {
         registro_t r = {0};
         char nombre[NOMBRE_MAXLEN]; 
         float precio = 0; 
         int stock = 0;
+        const time_t ahora = time(NULL);
+
+        pthread_mutex_lock(&tx_mtx);
+        local_tx_active = tx_active;
+        local_tx_owner = tx_owner;
+        pthread_mutex_unlock(&tx_mtx);
+
+        if(!local_tx_active)
+        {
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+            return;
+        }
+        
+        if (local_tx_active && local_tx_owner != cfd) 
+        {
+            dprintf(cfd, "ERR TX_ACTIVE\n");
+            return;
+        }
+
         if (sscanf(pbuf, "%63[^,],%f,%d", nombre, &precio, &stock) < 3) 
         {
             dprintf(cfd, "ERR ARG\n"); 
@@ -85,7 +125,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         r.nombre[NOMBRE_MAXLEN - 1] = '\0';
         r.precio = precio;
         r.stock = stock;
-        snprintf(r.timestamp, sizeof(r.timestamp), "now"); // TODO: fecha real
+        strftime(r.timestamp, sizeof(r.timestamp), "%Y-%m-%d %H:%M:%S", localtime(&ahora));
         r.borrado = false;
 
         if (!agregar_arch(&r)) 
@@ -94,18 +134,36 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             dprintf(cfd, "ERR IO\n");
         return;
     }
+
     if (!strcmp(cmd, "UPDATE")) 
     {
         int id; char nombre[NOMBRE_MAXLEN]; 
         float precio; 
         int stock;
+        registro_t patch = {0};
+
+        pthread_mutex_lock(&tx_mtx);
+        local_tx_active = tx_active;
+        local_tx_owner = tx_owner;
+        pthread_mutex_unlock(&tx_mtx);
+
+        if(!local_tx_active)
+        {
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+            return;
+        }
+        
+        if (local_tx_active && local_tx_owner != cfd) 
+        {
+            dprintf(cfd, "ERR TX_ACTIVE\n");
+            return;
+        }
 
         if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) 
         {
             dprintf(cfd, "ERR ARG\n"); 
             return;
         }
-        registro_t patch = {0};
         patch.id = id;
         memcpy(patch.nombre, nombre, NOMBRE_MAXLEN - 1);
         patch.nombre[NOMBRE_MAXLEN - 1] = '\0';
@@ -118,9 +176,28 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
+
     if (!strcmp(cmd, "DELETE")) 
     {
         int id = atoi(pbuf);
+
+        pthread_mutex_lock(&tx_mtx);
+        local_tx_active = tx_active;
+        local_tx_owner = tx_owner;
+        pthread_mutex_unlock(&tx_mtx);
+
+        if(!local_tx_active)
+        {
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+            return;
+        }
+        
+        if (local_tx_active && local_tx_owner != cfd) 
+        {
+            dprintf(cfd, "ERR TX_ACTIVE\n");
+            return;
+        }
+
         if (id <= 0)
         {
             dprintf(cfd, "ERR ARG\n"); 

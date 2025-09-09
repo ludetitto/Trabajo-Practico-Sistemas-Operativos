@@ -46,7 +46,11 @@ static void guardar_todos(FILE *f)
 }
 
 /* ====== API pública ====== */
-int abrir_arch(const char *path) {
+int abrir_arch(const char *path) 
+{
+    FILE *f;
+    char linea[512];
+
     pthread_mutex_lock(&mtx);
     strncpy(csv_path, path, sizeof(csv_path)-1);
 
@@ -54,15 +58,25 @@ int abrir_arch(const char *path) {
     productos = NULL;
     productos_tam = productos_cap = 0;
 
-    FILE *f = fopen(path, "r");
-    if (!f) { pthread_mutex_unlock(&mtx); return -1; }
+    f = fopen(path, "r");
+    if (!f) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
 
-    char line[512];
-    if (!fgets(line, sizeof(line), f)) { fclose(f); pthread_mutex_unlock(&mtx); return -1; } // header
+    if (!fgets(linea, sizeof(linea), f)) 
+    { 
+        fclose(f); 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    } // header
 
-    while (fgets(line, sizeof(line), f)) {
+    while (fgets(linea, sizeof(linea), f)) 
+    {
         registro_t r = {0};
-        if (parsear_linea(line, &r) == 0) {
+        if (!parsear_linea(linea, &r)) 
+        {
             asegurar_capacidad();
             productos[productos_tam++] = r;
         }
@@ -73,7 +87,8 @@ int abrir_arch(const char *path) {
     return 0;
 }
 
-void cerrar_arch(void) {
+void cerrar_arch(void) 
+{
     pthread_mutex_lock(&mtx);
     free(productos);
     productos = NULL;
@@ -81,15 +96,21 @@ void cerrar_arch(void) {
     pthread_mutex_unlock(&mtx);
 }
 
-int recargar_arch(void) {
+int recargar_arch(void) 
+{
     return abrir_arch(csv_path);
 }
 
 int guardar_arch(void) 
 {
+    FILE *f;
     pthread_mutex_lock(&mtx);
-    FILE *f = fopen(csv_path, "w");
-    if (!f) { pthread_mutex_unlock(&mtx); return -1; }
+    f = fopen(csv_path, "w");
+    if (!f) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
     guardar_todos(f);
     fclose(f);
     pthread_mutex_unlock(&mtx);
@@ -97,10 +118,13 @@ int guardar_arch(void)
 }
 
 /* ===== CRUD ===== */
-int buscar_id_arch(int id, registro_t *out) {
+int buscar_id_arch(int id, registro_t *out) 
+{
     pthread_mutex_lock(&mtx);
-    for (size_t i = 0; i < productos_tam; i++) {
-        if (productos[i].id == id && !productos[i].borrado) {
+    for (size_t i = 0; i < productos_tam; i++) 
+    {
+        if (productos[i].id == id && !productos[i].borrado) 
+        {
             if (out) *out = productos[i];
             pthread_mutex_unlock(&mtx);
             return 0;
@@ -110,20 +134,25 @@ int buscar_id_arch(int id, registro_t *out) {
     return -1;
 }
 
-int agregar_arch(const registro_t *r) {
-    if (!r) return -1;
+int agregar_arch(const registro_t *r) 
+{
+    int maxid = 0, rc;
+
+    if (!r) 
+        return -1;
+    
     pthread_mutex_lock(&mtx);
-    int maxid = 0;
     for (size_t i = 0; i < productos_tam; i++)
         if (productos[i].id > maxid) maxid = productos[i].id;
 
     registro_t nuevo = *r;
-    if (nuevo.id == 0) nuevo.id = maxid + 1;
+    if (!nuevo.id) 
+        nuevo.id = maxid + 1;
 
     asegurar_capacidad();
     productos[productos_tam++] = nuevo;
 
-    int rc = guardar_arch();
+    rc = guardar_arch();
     pthread_mutex_unlock(&mtx);
     return rc;
 }

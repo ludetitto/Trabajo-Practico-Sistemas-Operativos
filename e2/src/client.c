@@ -8,13 +8,16 @@
 #include <errno.h>
 
 /* escribe todo el buffer aunque write devuelva menos */
-static ssize_t escribir_todo(int fd, const void *buf, size_t n) {
+static ssize_t escribir_todo(int fd, const void *buf, size_t n) 
+{
     const char *p = buf;
     size_t faltan = n;
     while (faltan > 0) {
         ssize_t r = write(fd, p, faltan);
-        if (r < 0) {
-            if (errno == EINTR) continue;
+        if (r < 0) 
+        {
+            if (errno == EINTR) 
+            continue;
             return -1;
         }
         p += r;
@@ -49,8 +52,8 @@ static ssize_t leer_linea(int fd, char *buf, size_t cap) {
 int main(int argc, char **argv) 
 {
     const char *host = "127.0.0.1";
-    char linea[1024];
-    int port = 5000, parar = 0;
+    char linea[1024], buf[1024];
+    int port = 5000, parar = 0, sockfd;
     struct sockaddr_in sa = {0};
 
     for (int i = 1; i < argc; i++) 
@@ -61,7 +64,7 @@ int main(int argc, char **argv)
             port = atoi(argv[++i]);
     }
 
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) 
     { 
         perror("socket"); 
@@ -79,7 +82,6 @@ int main(int argc, char **argv)
     }
 
     /* banner inicial */
-    char buf[1024];
     if (leer_linea(sockfd, buf, sizeof(buf)) > 0)
         printf("%s\n", buf);
 
@@ -94,20 +96,20 @@ int main(int argc, char **argv)
             break;
         
         len = strlen(linea);
-        if (len == 0) 
-            continue;
-        if (linea[len-1] != '\n') 
+        if (len != 0)
+        {
+            if (linea[len - 1] != '\n') 
             linea[len++] = '\n';
-        if ((parar = escribir_todo(sockfd, linea, len)) < 0) 
-        {
-            perror("write");
-            break;
-        }
-        else
-        {
-            if (!strncasecmp(linea, "QUIT", 4)) break;
-            if (leer_linea(sockfd, buf, sizeof(buf)) <= 0) break;
-            printf("%s\n", buf);
+            if ((parar = escribir_todo(sockfd, linea, len)) < 0) 
+            {
+                perror("write");
+            }
+            else
+            {
+                if (!strncasecmp(linea, "QUIT", 4)) break;
+                if (leer_linea(sockfd, buf, sizeof(buf)) <= 0) break;
+                printf("%s\n", buf);
+            }
         }
     }
 

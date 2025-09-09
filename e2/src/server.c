@@ -15,11 +15,12 @@
 int procesar_linea_protocolo(int fd, const char *linea);
 
 /* estado de transacción (lock exclusivo sobre el CSV) */
-static int csv_fd = -1;
-static volatile int tx_active = 0;
-static pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
+int csv_fd = -1;
+int tx_active = 0;
+int tx_owner = -1;
+pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-static int intentar_iniciar_tx(void)
+static int intentar_iniciar_tx(int cfd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_active)
@@ -27,73 +28,94 @@ static int intentar_iniciar_tx(void)
     pthread_mutex_unlock(&tx_mtx);
     return -1;
   }
+
   struct flock lk = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
+  
   if (fcntl(csv_fd, F_SETLK, &lk) < 0)
   {
     pthread_mutex_unlock(&tx_mtx);
     return -1;
   }
   tx_active = 1;
+  tx_owner = cfd;
   pthread_mutex_unlock(&tx_mtx);
   return 0;
 }
-static void finalizar_tx(void)
+
+static int finalizar_tx(void)
 {
   pthread_mutex_lock(&tx_mtx);
   struct flock lk = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
   (void)fcntl(csv_fd, F_SETLK, &lk);
   tx_active = 0;
+  tx_owner = -1;
   pthread_mutex_unlock(&tx_mtx);
+  return 0;
 }
 
 /* worker por cliente */
 static void *iniciar_thread_cliente(void *arg)
 {
-  int cfd = (int)(intptr_t)arg;
-  FILE *in = fdopen(dup(cfd), "r");
+  int cfd = (int)(intptr_t)arg, denegar;
+  FILE *arch = fdopen(dup(cfd), "r");
   dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [producto=..] | UPDATE ... | DELETE <id> | BEGIN | COMMIT | ROLLBACK | QUIT\n");
   char linea[1024];
-  while (fgets(linea, sizeof(linea), in))
+
+  while (fgets(linea, sizeof(linea), arch))
   {
     if (!strncasecmp(linea, "QUIT", 4))
     {
       dprintf(cfd, "BYE\n");
       break;
     }
-    if (!strncasecmp(linea, "BEGIN", 5))
+    if (!strncasecmp(linea, "PING", 4)) 
     {
-      if (intentar_iniciar_tx() == 0)
-        dprintf(cfd, "OK\n");
+      dprintf(cfd, "OK\n");
+      continue;
+    }
+    if (!strncasecmp(linea, "BEGIN", 5)) 
+    {
+      if (!intentar_iniciar_tx(cfd))
+          dprintf(cfd, "OK\n");
       else
         dprintf(cfd, "ERR TX_ACTIVE\n");
       continue;
     }
-    if (!strncasecmp(linea, "COMMIT", 6))
+    if (!strncasecmp(linea, "COMMIT", 6)) 
     {
-      finalizar_tx();
-      dprintf(cfd, "OK\n");
+      if(!tx_active)
+        dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+      else if (!finalizar_tx())
+          dprintf(cfd, "OK\n");
+      else
+          dprintf(cfd, "ERR NOT_OWNER\n");
       continue;
     }
-    if (!strncasecmp(linea, "ROLLBACK", 8))
+    if (!strncasecmp(linea, "ROLLBACK", 8)) 
     {
-      finalizar_tx();
-      dprintf(cfd, "OK\n");
+      // logica del rollback
+      if(!tx_active)
+        dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+      else if (!finalizar_tx())
+          dprintf(cfd, "OK\n");
+      else
+          dprintf(cfd, "ERR NOT_OWNER\n");
       continue;
     }
 
     /* Si hay transacción activa, nadie puede consultar/modificar */
     pthread_mutex_lock(&tx_mtx);
-    int denegar = tx_active;
+    denegar = (tx_active && tx_owner != cfd);
     pthread_mutex_unlock(&tx_mtx);
-    if (denegar)
-    {
-      dprintf(cfd, "ERR TX_ACTIVE\n");
-      continue;
-    }
 
-    procesar_linea_protocolo(cfd, linea);
+    if (!denegar)
+    {
+      procesar_linea_protocolo(cfd, linea);
+    }
+    else
+      dprintf(cfd, "ERR TX_ACTIVE\n");
   }
-  fclose(in);
+  fclose(arch);
   close(cfd);
   return NULL;
 }
@@ -149,6 +171,7 @@ int main(int argc, char **argv)
 
   printf("Servidor escuchando en %s:%d (N=%d, backlog=%d) CSV=%s\n", host, port, N, M, csv);
   pthread_t th;
+  
   while (1)
   {
     int cfd = accept(socket_fd, NULL, NULL);

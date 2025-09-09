@@ -8,6 +8,10 @@
 #define NOMBRE_MAXLEN    64
 #define TIMESTAMP_MAXLEN 20
 
+extern int tx_active;
+extern int tx_owner;
+extern pthread_mutex_t tx_mtx;
+
 /* Registro persistente en CSV (producto) */
 typedef struct {
     int id;
