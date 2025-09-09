@@ -1,61 +1,92 @@
-#include "../include/common.h"
-#include "../include/ipc.h"
-#include "../include/randrec.h"
+// Generador: pide bloques de 10 IDs en RR estricto y produce 1 registro por ID.
+// Agrega logs en consola y un delay aleatorio de 100–1000 ms entre registros.
 
-static void comando_generador(const char *prog)
-{ // Help command
-    fprintf(stderr, "Uso: %s -q <cantidad_por_generador> -g <idx>\n", prog);
+#include "../include/generador.h"
+
+static volatile sig_atomic_t g_stop = 0;
+
+static void on_term(int s)
+{
+    (void)s;
+    g_stop = 1;
 }
 
-int main(int argc, char **argv)
+// reemplaza la versión con usleep -> nanosleep portable
+static inline void sleep_ms(int ms)
 {
-    int cant_a_producir = -1, // cantidad de registros a generar por este proceso
-        idx_generador = 0,    // índice del generador (opcional, por defecto 0)
-        cant_producida = 0;   // cantidad de registros generados hasta ahora
-
-    for (int i = 1; i < argc; i++)
-    { // Parseo de argumentos
-        if (!strcmp(argv[i], "-q") && i + 1 < argc)
-            cant_a_producir = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-g") && i + 1 < argc)
-            idx_generador = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--help"))
-        {
-            comando_generador(argv[0]);
-            return 0;
-        }
-    }
-    if (cant_a_producir <= 0)
+    if (ms <= 0)
+        return;
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    // reintentar si se interrumpe por señal
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR)
     {
-        comando_generador(argv[0]);
-        return 1;
     }
+}
+
+void generator_loop(int idx_generador)
+{
+#ifdef PR_SET_PDEATHSIG
+    // Si muere el padre, este proceso recibe SIGTERM automáticamente
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+#endif
+
+    struct sigaction sa = {0};
+    sa.sa_handler = on_term;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
 
     if (ipc_abrir_todos(0, 0) < 0)
     {
-        matar("ipc_abrir_todos(crear) falló al ejecutarse.");
+        matar("[GEN %d] ipc_abrir_todos(abrir) falló.", idx_generador);
     }
 
-    while (cant_producida < cant_a_producir)
+    // Semilla simple para el delay aleatorio por proceso
+    srand((unsigned)(getpid() ^ (unsigned)time(NULL)));
+
+    fprintf(stdout, "[GEN %d][pid=%d] iniciado.\n", idx_generador, (int)getpid());
+    fflush(stdout);
+
+    while (!g_stop)
     {
         uint32_t base = 0, cont = 0;
-        int no_disponible = pedir_bloque_ids(&base, &cont); // pido un bloque de IDs
-
-        if (!no_disponible)
+        int sin_ids = pedir_bloque_ids_rr(idx_generador, &base, &cont);
+        if (sin_ids)
         {
-            for (uint32_t i = 0; i < cont && cant_producida < cant_a_producir; i++)
-            { // para cada ID del bloque
-                registro_t r;
-                generar_randrec(&r, base + i, idx_generador);                              // genero un registro aleatorio
-                push(&r);                                                                  // lo pongo en el buffer circular (bloquea si está lleno)
-                /* struct timespec ts = {.tv_sec = 0, .tv_nsec = (rand() % 5 + 1) * 1000000}; // 1–5 ms
-                nanosleep(&ts, NULL); */
-                sleep(3);
-                cant_producida++;
-            }
+            fprintf(stdout, "[GEN %d][pid=%d] no hay más IDs. Fin.\n",
+                    idx_generador, (int)getpid());
+            fflush(stdout);
+            break;
+        }
+
+        uint32_t ultimo = base + cont - 1;
+        fprintf(stdout, "[GEN %d][pid=%d] bloque asignado: %u..%u (%u IDs)\n",
+                idx_generador, (int)getpid(), base, ultimo, cont);
+        fflush(stdout);
+
+        for (uint32_t i = 0; i < cont && !g_stop; ++i)
+        {
+            registro_t r;
+            generar_randrec(&r, base + i, idx_generador);
+            r.pid = getpid();
+
+            // Delay aleatorio 100–1000 ms antes de empujar
+            int d_ms = 100 + (rand() % 901);
+            fprintf(stdout, "[GEN %d][pid=%d] ID=%u → push (delay=%d ms)\n",
+                    idx_generador, (int)r.pid, r.id, d_ms);
+            fflush(stdout);
+            sleep_ms(d_ms);
+
+            push(&r); // bloquea si el ring está lleno
         }
     }
 
-    ipc_cerrar_todos(0); // cierro referencias (no unlink)
-    return 0;
+    fprintf(stdout, "[GEN %d][pid=%d] saliendo.\n", idx_generador, (int)getpid());
+    fflush(stdout);
+
+    ipc_cerrar_todos(0);
+    _exit(0);
 }

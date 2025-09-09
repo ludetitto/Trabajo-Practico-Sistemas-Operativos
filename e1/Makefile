@@ -1,31 +1,33 @@
-# Makefile (reemplazalo completo)
+# === Makefile: un solo binario (tp_e1) ===
 
 CC       = gcc
-CFLAGS   = -O2 -Wall -Wextra -std=c11 -Iinclude # nivel de optimización, warnings, estandar C, include
-LDFLAGS  = -pthread
+CFLAGS   = -O2 -Wall -Wextra -std=c11 -Iinclude
+# En algunas distros, shm_open requiere -lrt. Si falla el link, descomentar:
+# LDLIBS   = -pthread -lrt
+LDLIBS   = -pthread
 
 SRC_DIR  = src
 OBJ_DIR  = obj
 BIN_DIR  = bin
 
-# Objetos por binario (no hay más cola.o)
-COORD_SRCS = coordinador.c ipc.c csv.c
-GEN_SRCS   = generador.c ipc.c randrec.c
+# Agregá/quita fuentes según tu repo
+SRCS = \
+  $(SRC_DIR)/main.c \
+  $(SRC_DIR)/coordinador.c \
+  $(SRC_DIR)/generador.c \
+  $(SRC_DIR)/ipc.c \
+  $(SRC_DIR)/csv.c \
+  $(SRC_DIR)/randrec.c
 
-COORD_OBJS = $(addprefix $(OBJ_DIR)/,$(COORD_SRCS:.c=.o))
-GEN_OBJS   = $(addprefix $(OBJ_DIR)/,$(GEN_SRCS:.c=.o))
+OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+BIN  = $(BIN_DIR)/main
 
-BINS = $(BIN_DIR)/coordinador $(BIN_DIR)/generador
+.PHONY: all clean run demo validate
 
-.PHONY: all clean run
+all: $(BIN)
 
-all: $(BINS)
-
-$(BIN_DIR)/coordinador: $(COORD_OBJS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-$(BIN_DIR)/generador: $(GEN_OBJS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(BIN): $(OBJS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -36,18 +38,22 @@ $(OBJ_DIR) $(BIN_DIR):
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-# Ejemplo de ejecución: 3 generadores, 90 registros totales
-# (coordinador elimina IPCs al terminar)
+# Ejecución rápida pasando parámetros arbitrarios
+# Uso: make run ARGS="-n 3 -t 90 -o productos.csv"
 run: all
-	@set -e; \
-	out="productos.csv"; \
-	N=3; TOTAL=90; PORG=$$((TOTAL/N)); \
-	echo "[+] Ejecutando coordinador -> $$out"; \
-	$(BIN_DIR)/coordinador -n $$N -t $$TOTAL -f $$out & \
-	PID_COORD=$$!; \
-	for i in `seq 0 $$((N-1))`; do \
-		echo "[+] Generador $$i con $$PORG registros"; \
-		$(BIN_DIR)/generador -q $$PORG -g $$i & \
-	done; \
-	wait $$PID_COORD; \
-	echo "[+] Listo. CSV generado: $$out"
+	@echo "==> $(BIN) $(ARGS)"
+	$(BIN) $(ARGS)
+
+# Demo con valores por defecto
+demo: all
+	$(BIN) -n 3 -t 90 -o productos.csv
+
+# Validación simple de IDs (sin huecos/duplicados) sobre productos.csv
+validate:
+	@awk -F, 'NR==1{if($$1!="id"){print "ERROR header"; exit 1} next} \
+	{ id=$$1+0; if(id<=0){print "ERROR id inval",NR; exit 1} \
+	  if(seen[id]++){print "ERROR duplicado",id; exit 1} \
+	  if(NR==2) min=id; if(id<min) min=id; if(id>max) max=id; c++ } \
+	END{ if(min!=1){print "ERROR min!=1:",min; exit 1} \
+	     for(i=1;i<=max;i++) if(!seen[i]){print "ERROR falta id",i; exit 1} \
+	     print "OK:",c,"regs, ids 1..",max }' productos.csv
