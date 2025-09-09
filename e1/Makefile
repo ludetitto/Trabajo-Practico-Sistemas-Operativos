@@ -45,8 +45,7 @@ cleanAll-csv:
 	rm -f *.csv
 #elimina un csv especifico, se ejecuta así-> make clean-csv FILE=<nombreArchivo.csv> !!sin especacios entre el igual!!
 clean-csv:
-	rm -f $(FILE)
-
+	rm -f $(FILE) 
 
 # Ejecución rápida pasando parámetros arbitrarios
 # Uso: make run ARGS="-n 3 -t 90 -o productos.csv"
