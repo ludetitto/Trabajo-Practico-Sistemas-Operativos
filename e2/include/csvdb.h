@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #define NOMBRE_MAXLEN    64
 #define TIMESTAMP_MAXLEN 20
@@ -43,5 +44,12 @@ int   buscar_id_arch(int id, registro_t *out);
 int   agregar_arch(const registro_t *r);     /* agrega producto */
 int   actualizar_arch(const registro_t *patch); /* modifica producto */
 int   eliminar_arch(int id);                 /* borra producto */
+
+///AGREGADO -RO
+/* --- Snapshot para TX (BEGIN/COMMIT/ROLLBACK) --- */
+int csvdb_begin_snapshot(void);     /* tomar snapshot in-memory */
+int csvdb_commit_snapshot(void);    /* descartar snapshot */
+int csvdb_rollback_snapshot(void);  /* restaurar snapshot + guardar CSV */
+
 
 #endif
