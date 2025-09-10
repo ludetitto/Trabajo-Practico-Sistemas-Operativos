@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <ctype.h>
 
 #define NOMBRE_MAXLEN    64
 #define TIMESTAMP_MAXLEN 20
@@ -44,6 +45,13 @@ int   buscar_id_arch(int id, registro_t *out);
 int   agregar_arch(const registro_t *r);     /* agrega producto */
 int   actualizar_arch(const registro_t *patch); /* modifica producto */
 int   eliminar_arch(int id);                 /* borra producto */
+///agregado cisco
+
+int find_first_nombre_ci(const char *needle, registro_t *out);
+/* Devuelve array con todas las coincidencias (malloc).
+   *outs y *count salen seteados; el caller debe free(*outs). */
+int find_all_nombres_ci(const char *needle, registro_t **outs, size_t *count);
+
 
 ///AGREGADO -RO
 /* --- Snapshot para TX (BEGIN/COMMIT/ROLLBACK) --- */
