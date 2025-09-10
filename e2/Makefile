@@ -28,14 +28,14 @@ clean:
 
 # Demo: usa el CSV del E1; si no existe, crea uno chiquito
 demo_queue: all
-	@if [ ! -f ../e1/productos.csv ]; then \
-	  echo "id,generador,pid,Nombre" > ../e1/productos.csv; \
-	  echo "1,1,758,Monitor 24" 1080p 144Hz,19708.73,35" >> ../e1/productos.csv; \
-	  echo "11,0,757,Lector tarjetas SD,28274.66,58"  >> ../e1/productos.csv; \
-	  echo "21,2,759,Mouse gamer 16000 DPI,60620.63,78" >> ../e1/productos.csv; \
+	@if [ ! -f ../db.csv ]; then \
+	  echo "id,generador,pid,Nombre" > ../db.csv; \
+	  echo "1,1,758,Monitor 24" 1080p 144Hz,19708.73,35" >> ../db.csv; \
+	  echo "11,0,757,Lector tarjetas SD,28274.66,58"  >> ../db.csv; \
+	  echo "21,2,759,Mouse gamer 16000 DPI,60620.63,78" >> ../db.csv; \
 	fi
 	@echo ">>> Lanzando server (CSV=../e1/db.csv) en 127.0.0.1:5000"
-	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/productos.csv & echo $$! > .srvpid
+	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../db.csv & echo $$! > .srvpid
 	@sleep 1
 	@echo ">>> Script de cliente (cola por evento + tx):"
 	@( \
@@ -50,11 +50,11 @@ demo_queue: all
 
 # Ejecuta solo el servidor usando el CSV del E1
 run_server: all
-	@if [ ! -f ../e1/productos.csv ]; then \
-	  echo "Falta ../e1/productos.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
+	@if [ ! -f ../db.csv ]; then \
+	  echo "Falta ../db.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
 	fi
-	@echo ">>> Server en 127.0.0.1:5000 usando ../e1/productos.csv"
-	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../e1/productos.csv
+	@echo ">>> Server en 127.0.0.1:5000 usando ../db.csv"
+	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../db.csv
 
 # Cliente interactivo
 client: all

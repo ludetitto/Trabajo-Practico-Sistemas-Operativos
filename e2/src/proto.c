@@ -28,15 +28,28 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     char buf[1024], cmd[32] = {0};
     const char *pbuf;
     int i = 0, local_tx_active, local_tx_owner;
+    registro_t *vec = NULL, r; 
+    size_t n = 0;
 
     strncpy(buf, linea, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     rstrip(buf);
     pbuf = buf; lskip(&pbuf);
-    if (!*pbuf) { dprintf(cfd, "ERR EMPTY\n"); return; }
+    if (!*pbuf)
+    { 
+        dprintf(cfd, "ERR EMPTY\n"); 
+        return; 
+    }
 
-    while (pbuf[i] && !isspace((unsigned char)pbuf[i]) && i < (int)sizeof(cmd) - 1) { cmd[i] = pbuf[i]; i++; }
-    cmd[i] = 0; upper(cmd); pbuf += i; lskip(&pbuf);
+    while (pbuf[i] && !isspace((unsigned char)pbuf[i]) && i < (int)sizeof(cmd) - 1) 
+    { 
+        cmd[i] = pbuf[i]; 
+        i++; 
+    }
+    cmd[i] = 0; 
+    upper(cmd); 
+    pbuf += i; 
+    lskip(&pbuf);
 
     /* snapshot de TX: para política de bloqueo */
     pthread_mutex_lock(&tx_mtx);
@@ -50,7 +63,6 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     /* GET <id> (lectura permitida si no hay TX ajena) */
     if (!strcmp(cmd, "GET")) {
         int id = atoi(pbuf);
-        registro_t r;
 
         if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
 
@@ -62,40 +74,38 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         return;
     }
 
-    /* ===== NUEVO: FIND <texto> =====
-       - Devuelve PRIMER match (case-insensitive) en nombre. */
+    /* Devuelve PRIMER match (case-insensitive) en nombre. */
     if (!strcmp(cmd, "FIND")) {
-        // ¿Soporta "FIND ALL ..."?
-        if (!strncasecmp(pbuf, "ALL", 3) && isspace((unsigned char)pbuf[3])) {
-            // Derivo a FIND ALL
-            pbuf += 3; lskip(&pbuf);
-            // Bloqueo de lectura si TX ajena
-            if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
+    // ¿FIND ALL ... ?
+    if (!strncasecmp(pbuf, "ALL", 3) && isspace((unsigned char)pbuf[3])) {
+        pbuf += 3; while (*pbuf && isspace((unsigned char)*pbuf)) pbuf++;
 
-            registro_t *arr = NULL; size_t n = 0;
-            if (find_all_nombres_ci(pbuf, &arr, &n) != 0) {
-                dprintf(cfd, "END\n");
-                return;
-            }
-            for (size_t k = 0; k < n; ++k) {
-                dprintf(cfd, "ROW %d,%s,%.2f,%u,%s\n",
-                        arr[k].id, arr[k].nombre, arr[k].precio, arr[k].stock, arr[k].timestamp);
-            }
-            free(arr);
-            dprintf(cfd, "END\n");
-            return;
-        }
-
-        // FIND simple
+        // Bloqueo: lecturas prohibidas solo si hay TX ajena
         if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
 
-        registro_t r;
-        if (find_first_nombre_ci(pbuf, &r) == 0)
-            dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n",
-                    r.id, r.nombre, r.precio, r.stock, r.timestamp);
-        else
-            dprintf(cfd, "ERR NOT_FOUND\n");
+        if (buscar_nombre_todos(pbuf, &vec, &n) != 0) {
+            dprintf(cfd, "END\n");       // SIEMPRE cerrar con END aunque no haya filas
+            return;
+        }
+        for (size_t k = 0; k < n; ++k) {
+            dprintf(cfd, "ROW %d,%s,%.2f,%u,%s\n",
+                    vec[k].id, vec[k].nombre, vec[k].precio, vec[k].stock, vec[k].timestamp);
+        }
+        free(vec);
+        dprintf(cfd, "END\n");           // cierre de batch
         return;
+    }
+
+    // FIND simple
+    if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
+
+    registro_t r;
+    if (buscar_nombre_primero(pbuf, &r) == 0)
+        dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n",
+                r.id, r.nombre, r.precio, r.stock, r.timestamp);
+    else
+        dprintf(cfd, "ERR NOT_FOUND\n");
+    return;
     }
 
     /* ====== DML requieren TX activa y ser dueño ====== */
@@ -104,50 +114,101 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         char nombre[NOMBRE_MAXLEN]; float precio = 0; int stock = 0;
         const time_t ahora = time(NULL);
 
-        if (!local_tx_active)           { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd)      { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+        if (!local_tx_active)           
+        { 
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); 
+            return; 
+        }
 
-        if (sscanf(pbuf, "%63[^,],%f,%d", nombre, &precio, &stock) < 3) { dprintf(cfd, "ERR ARG\n"); return; }
+        if (local_tx_owner != cfd)      
+        { 
+            dprintf(cfd, "ERR TX_ACTIVE\n");    
+            return; 
+        }
+
+        if (sscanf(pbuf, "%63[^,],%f,%d", nombre, &precio, &stock) < 3) 
+        { 
+            dprintf(cfd, "ERR ARG\n"); 
+            return; 
+        }
+
         strncpy(r.nombre, nombre, NOMBRE_MAXLEN - 1); r.nombre[NOMBRE_MAXLEN - 1] = '\0';
         r.precio = precio; r.stock = stock;
         strftime(r.timestamp, sizeof(r.timestamp), "%Y-%m-%d %H:%M:%S", localtime(&ahora));
         r.borrado = false;
 
-        if (!agregar_arch(&r)) dprintf(cfd, "OK\n");
-        else                   dprintf(cfd, "ERR IO\n");
+        if (!agregar_arch(&r)) 
+            dprintf(cfd, "OK\n");
+        else                   
+            dprintf(cfd, "ERR IO\n");
         return;
     }
 
-    if (!strcmp(cmd, "UPDATE")) {
+    if (!strcmp(cmd, "UPDATE")) 
+    {
         int id; char nombre[NOMBRE_MAXLEN]; float precio; int stock;
         registro_t patch = {0};
 
-        if (!local_tx_active)           { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd)      { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+        if (!local_tx_active)           
+        { 
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); 
+            return; 
+        }
+        if (local_tx_owner != cfd)      
+        { 
+            dprintf(cfd, "ERR TX_ACTIVE\n");    
+            return; 
+        }
 
-        if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) { dprintf(cfd, "ERR ARG\n"); return; }
+        if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) 
+        { 
+            dprintf(cfd, "ERR ARG\n"); 
+            return; 
+        }
+
         patch.id = id;
         memcpy(patch.nombre, nombre, NOMBRE_MAXLEN - 1); patch.nombre[NOMBRE_MAXLEN - 1] = '\0';
         patch.precio = precio; patch.stock = stock;
 
-        if (!actualizar_arch(&patch)) dprintf(cfd, "OK\n");
-        else                          dprintf(cfd, "ERR NOT_FOUND\n");
+        if (!actualizar_arch(&patch)) 
+            dprintf(cfd, "OK\n");
+        else                          
+            dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
 
-    if (!strcmp(cmd, "DELETE")) {
+    if (!strcmp(cmd, "DELETE")) 
+    {
         int id = atoi(pbuf);
 
-        if (!local_tx_active)           { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd)      { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
-        if (id <= 0)                    { dprintf(cfd, "ERR ARG\n");          return; }
+        if (!local_tx_active)           
+        { 
+            dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); 
+            return; 
+        }
+        if (local_tx_owner != cfd)      
+        { 
+            dprintf(cfd, "ERR TX_ACTIVE\n");    
+            return; 
+        }
+        if (id <= 0)                    
+        { 
+            dprintf(cfd, "ERR ARG\n");          
+            return; 
+        }
 
-        if (!eliminar_arch(id)) dprintf(cfd, "OK\n");
-        else                    dprintf(cfd, "ERR NOT_FOUND\n");
+        if (!eliminar_arch(id)) 
+            dprintf(cfd, "OK\n");
+        else                    
+            dprintf(cfd, "ERR NOT_FOUND\n");
         return;
     }
 
-    if (!strcmp(cmd, "QUIT")) { dprintf(cfd, "BYE\n"); return; }
+    if (!strcmp(cmd, "QUIT")) 
+    { 
+        dprintf(cfd, "BYE\n"); 
+        return; 
+    }
 
     dprintf(cfd, "ERR CMD\n");
 }
