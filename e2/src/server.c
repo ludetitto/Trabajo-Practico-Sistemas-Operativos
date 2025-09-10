@@ -38,7 +38,26 @@ static int intentar_iniciar_tx(int cfd)
   }
   tx_active = 1;
   tx_owner = cfd;
+
+  /* tras tomar el lock F_WRLCK y setear tx_active/owner */
+  if (generar_snapshot() != 0) {
+      /* si falla snapshot, deshacer TX y lock de archivo */
+      struct flock lk2;
+      memset(&lk2, 0, sizeof(lk2));
+      lk2.l_type   = F_UNLCK;
+      lk2.l_whence = SEEK_SET;
+      lk2.l_start  = 0;
+      lk2.l_len    = 0;
+      (void)fcntl(csv_fd, F_SETLK, &lk2);
+
+      tx_active = 0;
+      tx_owner  = -1;
+      pthread_mutex_unlock(&tx_mtx);
+      return -1;
+  }
+
   pthread_mutex_unlock(&tx_mtx);
+
   return 0;
 }
 
@@ -58,7 +77,7 @@ static void *iniciar_thread_cliente(void *arg)
 {
   int cfd = (int)(intptr_t)arg, denegar;
   FILE *arch = fdopen(dup(cfd), "r");
-  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | ADD ... [producto=..] | UPDATE ... | DELETE <id> | BEGIN | COMMIT | ROLLBACK | QUIT\n");
+  dprintf(cfd, "Conectado. Comandos: PING | GET <id> | FIND <nombre> | FIND ALL <nombre> | ADD ... [producto=..] | UPDATE ... | DELETE <id> | BEGIN | COMMIT | ROLLBACK | QUIT\n");
   char linea[1024];
 
   while (fgets(linea, sizeof(linea), arch))
@@ -93,8 +112,25 @@ static void *iniciar_thread_cliente(void *arg)
     }
     if (!strncasecmp(linea, "ROLLBACK", 8)) 
     {
-      // logica del rollback
-      if(!tx_active)
+
+       if (!tx_active) {
+        dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
+        continue;
+        }
+        if (tx_owner != cfd) {
+            dprintf(cfd, "ERR NOT_OWNER\n");
+            continue;
+        }
+
+      /* restaurar snapshot + persistir CSV, luego cerrar TX */
+        int rc = descartar_snapshot();
+        finalizar_tx();
+
+        if (rc == 0) dprintf(cfd, "OK\n");
+        else         dprintf(cfd, "ERR ROLLBACK_FAILED\n");
+        continue;
+    // logica del rollback
+     if(!tx_active)
         dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
       else if (!finalizar_tx())
           dprintf(cfd, "OK\n");
@@ -102,7 +138,6 @@ static void *iniciar_thread_cliente(void *arg)
           dprintf(cfd, "ERR NOT_OWNER\n");
       continue;
     }
-
     /* Si hay transacción activa, nadie puede consultar/modificar */
     pthread_mutex_lock(&tx_mtx);
     denegar = (tx_active && tx_owner != cfd);

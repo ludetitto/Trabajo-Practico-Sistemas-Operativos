@@ -47,17 +47,17 @@ int   actualizar_arch(const registro_t *patch); /* modifica producto */
 int   eliminar_arch(int id);                 /* borra producto */
 ///agregado cisco
 
-int find_first_nombre_ci(const char *needle, registro_t *out);
+int buscar_nombre_primero(const char *buscado, registro_t *out);
 /* Devuelve array con todas las coincidencias (malloc).
    *outs y *count salen seteados; el caller debe free(*outs). */
-int find_all_nombres_ci(const char *needle, registro_t **outs, size_t *count);
+int buscar_nombre_todos(const char *buscado, registro_t **outs, size_t *cont);
 
 
 ///AGREGADO -RO
 /* --- Snapshot para TX (BEGIN/COMMIT/ROLLBACK) --- */
-int csvdb_begin_snapshot(void);     /* tomar snapshot in-memory */
-int csvdb_commit_snapshot(void);    /* descartar snapshot */
-int csvdb_rollback_snapshot(void);  /* restaurar snapshot + guardar CSV */
+int generar_snapshot(void);     /* tomar snapshot in-memory */
+int guardar_snapshot(void);    /* descartar snapshot */
+int descartar_snapshot(void);  /* restaurar snapshot + guardar CSV */
 
 
 #endif
