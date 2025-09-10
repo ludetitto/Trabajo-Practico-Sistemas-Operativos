@@ -1,3 +1,4 @@
+// csvdb.c
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,48 +7,78 @@
 #include <pthread.h>
 #include "../include/csvdb.h"
 
-/* ====== Estado global ====== */
+/* ====== Estado global (BD en memoria) ====== */
 static char csv_path[512] = {0};
 static registro_t *productos = NULL;
 static size_t productos_tam = 0;
 static size_t productos_cap = 0;
+static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;    // protege productos[]
 
-static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-
-/* ====== Internos ====== */
-static void asegurar_capacidad(void) 
-{
+/* ====== Helpers internos ====== */
+static void asegurar_capacidad(void) {
     if (productos_tam == productos_cap) {
         size_t nueva_cap = productos_cap ? productos_cap * 2 : 128;
-        registro_t *tmp = realloc(productos, nueva_cap * sizeof(registro_t));
+        registro_t *tmp = (registro_t*)realloc(productos, nueva_cap * sizeof(registro_t));
         if (!tmp) return;
         productos = tmp;
         productos_cap = nueva_cap;
     }
 }
 
-static int parsear_linea(const char *linea, registro_t *r) 
-{
+/* compara subcadena case-insensitive: true si hay needle dentro de haystack */
+static int ci_contains(const char *haystack, const char *needle) {
+    if (!needle || !*needle) return 1;
+    if (!haystack) return 0;
+    // búsqueda simple O(n*m) en minúsculas
+    for (const char *h = haystack; *h; ++h) {
+        const char *p = h, *q = needle;
+        while (*p && *q) {
+            char c1 = (char)tolower((unsigned char)*p);
+            char c2 = (char)tolower((unsigned char)*q);
+            if (c1 != c2) break;
+            ++p; ++q;
+        }
+        if (!*q) return 1;
+    }
+    return 0;
+}
+
+static int parsear_linea(const char *linea, registro_t *r) {
+    // id,generador,pid,nombre,precio,stock,timestamp,borrado
     return sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
                   &r->id, &r->generador, &r->pid, r->nombre,
                   &r->precio, &r->stock, r->timestamp, (int*)&r->borrado) == 8 ? 0 : -1;
 }
 
-static void guardar_todos(FILE *f) 
-{
-    fprintf(f, "id,nombre,precio,stock,timestamp,borrado\n");
-    for (size_t i = 0; i < productos_tam; i++) 
-    {
+/* Header consistente (8 columnas) + filas */
+static void guardar_todos(FILE *f) {
+    fprintf(f, "id,generador,pid,nombre,precio,stock,timestamp,borrado\n");
+    for (size_t i = 0; i < productos_tam; i++) {
         registro_t *r = &productos[i];
-        fprintf(f, "%d,%d,%d,%s,%f,%u,%s,%d\n",
-                  r->id, r->generador, r->pid, r->nombre,
-                  r->precio, r->stock, r->timestamp, r->borrado? 1: 0);
+        fprintf(f, "%d,%d,%d,%s,%.2f,%u,%s,%d\n",
+                r->id, r->generador, r->pid, r->nombre,
+                r->precio, r->stock, r->timestamp, r->borrado ? 1 : 0);
     }
 }
 
+/* ====== Guardado en CSV ====== */
+static int guardar_arch_locked(void) {        // NO toma mtx
+    FILE *f = fopen(csv_path, "w");
+    if (!f) return -1;
+    guardar_todos(f);
+    fclose(f);
+    return 0;
+}
+int guardar_arch(void) {                      // SÍ toma mtx
+    int rc;
+    pthread_mutex_lock(&mtx);
+    rc = guardar_arch_locked();
+    pthread_mutex_unlock(&mtx);
+    return rc;
+}
+
 /* ====== API pública ====== */
-int abrir_arch(const char *path) 
-{
+int abrir_arch(const char *path) {
     FILE *f;
     char linea[512];
 
@@ -59,24 +90,16 @@ int abrir_arch(const char *path)
     productos_tam = productos_cap = 0;
 
     f = fopen(path, "r");
-    if (!f) 
-    { 
-        pthread_mutex_unlock(&mtx); 
-        return -1; 
+    if (!f) { pthread_mutex_unlock(&mtx); return -1; }
+
+ if (!fgets(linea, sizeof(linea), f)) {
+        fclose(f);
+        pthread_mutex_unlock(&mtx);
+        return -1; // archivo vacío o error
     }
-
-    if (!fgets(linea, sizeof(linea), f)) 
-    { 
-        fclose(f); 
-        pthread_mutex_unlock(&mtx); 
-        return -1; 
-    } // header
-
-    while (fgets(linea, sizeof(linea), f)) 
-    {
+    while (fgets(linea, sizeof(linea), f)) {
         registro_t r = {0};
-        if (!parsear_linea(linea, &r)) 
-        {
+        if (!parsear_linea(linea, &r)) {
             asegurar_capacidad();
             productos[productos_tam++] = r;
         }
@@ -87,8 +110,7 @@ int abrir_arch(const char *path)
     return 0;
 }
 
-void cerrar_arch(void) 
-{
+void cerrar_arch(void) {
     pthread_mutex_lock(&mtx);
     free(productos);
     productos = NULL;
@@ -96,35 +118,15 @@ void cerrar_arch(void)
     pthread_mutex_unlock(&mtx);
 }
 
-int recargar_arch(void) 
-{
+int recargar_arch(void) {
     return abrir_arch(csv_path);
 }
 
-int guardar_arch(void) 
-{
-    FILE *f;
-    pthread_mutex_lock(&mtx);
-    f = fopen(csv_path, "w");
-    if (!f) 
-    { 
-        pthread_mutex_unlock(&mtx); 
-        return -1; 
-    }
-    guardar_todos(f);
-    fclose(f);
-    pthread_mutex_unlock(&mtx);
-    return 0;
-}
-
 /* ===== CRUD ===== */
-int buscar_id_arch(int id, registro_t *out) 
-{
+int buscar_id_arch(int id, registro_t *out) {
     pthread_mutex_lock(&mtx);
-    for (size_t i = 0; i < productos_tam; i++) 
-    {
-        if (productos[i].id == id && !productos[i].borrado) 
-        {
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
             if (out) *out = productos[i];
             pthread_mutex_unlock(&mtx);
             return 0;
@@ -134,51 +136,40 @@ int buscar_id_arch(int id, registro_t *out)
     return -1;
 }
 
-int agregar_arch(const registro_t *r) 
-{
+int agregar_arch(const registro_t *r) {
     int maxid = 0, rc;
+    if (!r) return -1;
 
-    if (!r) 
-        return -1;
-    
-    pthread_mutex_lock(&mtx);
+    pthread_mutex_lock(&mtx);                 // único lock
     for (size_t i = 0; i < productos_tam; i++)
         if (productos[i].id > maxid) maxid = productos[i].id;
 
     registro_t nuevo = *r;
-    if (!nuevo.id) 
-        nuevo.id = maxid + 1;
+    if (!nuevo.id) nuevo.id = maxid + 1;
 
     asegurar_capacidad();
     productos[productos_tam++] = nuevo;
 
-    rc = guardar_arch();
+    rc = guardar_arch_locked();               // evita doble lock
     pthread_mutex_unlock(&mtx);
     return rc;
 }
 
-int actualizar_arch(const registro_t *patch) 
-{
-    int rc;
-    
-    if (!patch) 
-        return -1;
-    pthread_mutex_lock(&mtx);
+int actualizar_arch(const registro_t *patch) {
+    int rc = -1;
+    if (!patch) return -1;
 
-    for (size_t i = 0; i < productos_tam; i++) 
-    {
-        if (productos[i].id == patch->id) 
-        {
-            if (patch->nombre[0]) 
-            {
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == patch->id) {
+            if (patch->nombre[0]) {
                 strncpy(productos[i].nombre, patch->nombre, NOMBRE_MAXLEN - 1);
                 productos[i].nombre[NOMBRE_MAXLEN - 1] = '\0';
             }
-            if (patch->precio > 0) 
-                productos[i].precio = patch->precio;
-            // if (patch->stock >= 0)
+            if (patch->precio > 0) productos[i].precio = patch->precio;
             productos[i].stock = patch->stock;
-            rc = guardar_arch();
+
+            rc = guardar_arch_locked();       // evita doble lock
             pthread_mutex_unlock(&mtx);
             return rc;
         }
@@ -187,16 +178,15 @@ int actualizar_arch(const registro_t *patch)
     return -1;
 }
 
-int eliminar_arch(int id) 
-{
-    pthread_mutex_lock(&mtx);
-    for (size_t i = 0; i < productos_tam; i++) 
-    {
-        if (productos[i].id == id) 
-        {
+int eliminar_arch(int id) {
+    int rc = -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id) {
             productos[i].borrado = true;
+            rc = guardar_arch_locked();       // evita doble lock
             pthread_mutex_unlock(&mtx);
-            int rc = guardar_arch();
             return rc;
         }
     }
@@ -204,42 +194,25 @@ int eliminar_arch(int id)
     return -1;
 }
 
-///AGREGADO -RO
-/* ==== Snapshot de TX ====
-Supone que ya existen en este archivo: 
-   - registro_t *productos;
-   - size_t productos_tam, productos_cap;
-   - pthread_mutex_t mtx;
-   - int guardar_arch(void);   // reescribe CSV desde 'productos[]'
-*/
+/* ==== Snapshot de TX (BEGIN/COMMIT/ROLLBACK) ==== */
 static registro_t *snapshot      = NULL;
 static size_t      snapshot_tam  = 0;
 static size_t      snapshot_cap  = 0;
 static int         snapshot_on   = 0;
 
-/* Copia en memoria el vector productos[] tal como está al momento del BEGIN */
 int csvdb_begin_snapshot(void) {
     pthread_mutex_lock(&mtx);
-    if (snapshot_on) {                 // ya hay snapshot
-        pthread_mutex_unlock(&mtx);
-        return -1;
-    }
+    if (snapshot_on) { pthread_mutex_unlock(&mtx); return -1; }
     snapshot_cap = productos_cap;
     snapshot_tam = productos_tam;
     snapshot = (registro_t*)malloc(sizeof(registro_t) * (snapshot_cap ? snapshot_cap : 1));
-    if (!snapshot) {
-        pthread_mutex_unlock(&mtx);
-        return -1;
-    }
-    if (productos_tam) {
-        memcpy(snapshot, productos, sizeof(registro_t) * productos_tam);
-    }
+    if (!snapshot) { pthread_mutex_unlock(&mtx); return -1; }
+    if (productos_tam) memcpy(snapshot, productos, sizeof(registro_t) * productos_tam);
     snapshot_on = 1;
     pthread_mutex_unlock(&mtx);
     return 0;
 }
 
-/* Descarta el snapshot (se usa en COMMIT) */
 int csvdb_commit_snapshot(void) {
     pthread_mutex_lock(&mtx);
     if (snapshot_on) {
@@ -252,23 +225,15 @@ int csvdb_commit_snapshot(void) {
     return 0;
 }
 
-/* Restaura el snapshot y persiste a CSV (se usa en ROLLBACK) */
 int csvdb_rollback_snapshot(void) {
     pthread_mutex_lock(&mtx);
-    if (!snapshot_on) {
-        pthread_mutex_unlock(&mtx);
-        return -1;
-    }
+    if (!snapshot_on) { pthread_mutex_unlock(&mtx); return -1; }
 
-    /* Asegurar capacidad en productos[] */
     if (productos_cap < snapshot_cap) {
         registro_t *tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_cap);
-        if (!tmp) {   // si no podemos ampliar, al menos intentamos con el tamaño justo
+        if (!tmp) {
             tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_tam);
-            if (!tmp) {
-                pthread_mutex_unlock(&mtx);
-                return -1;
-            }
+            if (!tmp) { pthread_mutex_unlock(&mtx); return -1; }
             productos_cap = snapshot_tam;
         } else {
             productos_cap = snapshot_cap;
@@ -276,20 +241,62 @@ int csvdb_rollback_snapshot(void) {
         productos = tmp;
     }
 
-    /* Restaurar contenido y tamaño */
-    if (snapshot_tam) {
-        memcpy(productos, snapshot, sizeof(registro_t) * snapshot_tam);
-    }
+    if (snapshot_tam) memcpy(productos, snapshot, sizeof(registro_t) * snapshot_tam);
     productos_tam = snapshot_tam;
 
-    /* Liberar snapshot */
     free(snapshot);
     snapshot = NULL;
     snapshot_tam = snapshot_cap = 0;
     snapshot_on = 0;
 
+    int rc = guardar_arch_locked();           // persiste lo restaurado
+    pthread_mutex_unlock(&mtx);
+    return rc;
+}
+
+/* ===== NUEVO: búsquedas por nombre ===== */
+
+/* Primer match por subcadena (case-insensitive, no borrado) */
+int find_first_nombre_ci(const char *needle, registro_t *out) {
+    int rc = -1;
+    pthread_mutex_lock(&mtx);
+    for (size_t i = 0; i < productos_tam; ++i) {
+        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle)) {
+            if (out) *out = productos[i];
+            rc = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mtx);
+    return rc; // 0 si encontró, -1 si no
+}
+
+/* Todas las coincidencias; devuelve array (malloc) y cantidad */
+int find_all_nombres_ci(const char *needle, registro_t **outs, size_t *count) {
+    if (!outs || !count) return -1;
+    *outs = NULL; *count = 0;
+
+    pthread_mutex_lock(&mtx);
+    // 1ª pasada: contar
+    size_t c = 0;
+    for (size_t i = 0; i < productos_tam; ++i)
+        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle))
+            ++c;
+
+    if (c == 0) { pthread_mutex_unlock(&mtx); return -1; }
+
+    // 2ª pasada: copiar
+    registro_t *arr = (registro_t*)malloc(sizeof(registro_t) * c);
+    if (!arr) { pthread_mutex_unlock(&mtx); return -1; }
+
+    size_t j = 0;
+    for (size_t i = 0; i < productos_tam; ++i)
+        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle))
+            arr[j++] = productos[i];
+
     pthread_mutex_unlock(&mtx);
 
-    /* Persistir estado restaurado (usa el CSV actual y regraba todo) */
-    return guardar_arch();
+    *outs = arr;
+    *count = c;
+    return 0;
 }
