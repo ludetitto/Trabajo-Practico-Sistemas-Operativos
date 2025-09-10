@@ -34,9 +34,18 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 
 $(OBJ_DIR) $(BIN_DIR):
 	mkdir -p $@
-
+#elimina solo los archivos generados (binarios y objetos)
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
+# elimina TODOS los archivos generados (binarios, objetos, CSVs)
+cleanAll:
+	rm -rf $(OBJ_DIR) $(BIN_DIR) *.csv
+#elimina TODOS LOS ARCHIVOS .csv del directorio actual
+cleanAll-csv:
+	rm -f *.csv
+#elimina un csv especifico, se ejecuta así-> make clean-csv FILE=<nombreArchivo.csv> !!sin especacios entre el igual!!
+clean-csv:
+	rm -f $(FILE) 
 
 # Ejecución rápida pasando parámetros arbitrarios
 # Uso: make run ARGS="-n 3 -t 90 -o productos.csv"

@@ -16,11 +16,11 @@ int procesar_linea_protocolo(int fd, const char *linea);
 
 /* estado de transacción (lock exclusivo sobre el CSV) */
 int csv_fd = -1;
-int tx_active = 0; //flag -> si hay un beggin "activo"
-int tx_owner = -1; //guarda el cfd del cliente que inició la transacción ¿qué es csd? -> client file descriptor 
+int tx_active = 0;
+int tx_owner = -1;
 pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
-//FUNCIÓN QUE YA ESTABA - de Lu
-/*static int intentar_iniciar_tx(int cfd)
+
+static int intentar_iniciar_tx(int cfd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_active)
@@ -41,58 +41,7 @@ pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
   pthread_mutex_unlock(&tx_mtx);
   return 0;
 }
-*/
-//FUNCIÓN NUEVA - RO
-/* Toma el lock de archivo (F_WRLCK) y marca la TX como activa para 'cfd'.
-   Devuelve 0 si OK, -1 si falla (p. ej. ya había una TX o no pudo bloquear) */
-static int intentar_iniciar_tx(int cfd) {
-    pthread_mutex_lock(&tx_mtx);
 
-    if (tx_active) {
-        pthread_mutex_unlock(&tx_mtx);
-        return -1;  /* ya hay una TX activa */
-    }
-
-    /* lock exclusivo a nivel de archivo CSV (toda la región) */
-    struct flock lk;
-    memset(&lk, 0, sizeof(lk));
-    lk.l_type   = F_WRLCK;
-    lk.l_whence = SEEK_SET;
-    lk.l_start  = 0;
-    lk.l_len    = 0;   /* 0 = hasta EOF */
-
-    if (fcntl(csv_fd, F_SETLK, &lk) == -1) {
-        pthread_mutex_unlock(&tx_mtx);
-        return -1;  /* no se pudo tomar el lock del archivo */
-    }
-
-    tx_active = 1;
-    tx_owner  = cfd;
-
-    /* tras tomar el lock F_WRLCK y setear tx_active/owner */
-    if (csvdb_begin_snapshot() != 0) {
-        /* si falla snapshot, deshacer TX y lock de archivo */
-        struct flock lk2;
-        memset(&lk2, 0, sizeof(lk2));
-        lk2.l_type   = F_UNLCK;
-        lk2.l_whence = SEEK_SET;
-        lk2.l_start  = 0;
-        lk2.l_len    = 0;
-        (void)fcntl(csv_fd, F_SETLK, &lk2);
-
-        tx_active = 0;
-        tx_owner  = -1;
-        pthread_mutex_unlock(&tx_mtx);
-        return -1;
-    }
-
-    pthread_mutex_unlock(&tx_mtx);
-    return 0;
-}
-
-
-//FUNCIÓN QUE YA ESTABA - de LU
-/*
 static int finalizar_tx(void)
 {
   pthread_mutex_lock(&tx_mtx);
@@ -102,26 +51,6 @@ static int finalizar_tx(void)
   tx_owner = -1;
   pthread_mutex_unlock(&tx_mtx);
   return 0;
-}*/
-
-//FUNCIÓN NUEVA - RO
-/* Libera lock de archivo y limpia flags de TX */
-static void finalizar_tx(void) {
-    pthread_mutex_lock(&tx_mtx);
-
-    /* liberar lock del CSV si estaba activo */
-    struct flock lk;
-    memset(&lk, 0, sizeof(lk));
-    lk.l_type   = F_UNLCK;
-    lk.l_whence = SEEK_SET;
-    lk.l_start  = 0;
-    lk.l_len    = 0;
-    (void)fcntl(csv_fd, F_SETLK, &lk);
-
-    tx_active = 0;
-    tx_owner  = -1;
-
-    pthread_mutex_unlock(&tx_mtx);
 }
 
 /* worker por cliente */
@@ -156,39 +85,22 @@ static void *iniciar_thread_cliente(void *arg)
     {
       if(!tx_active)
         dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
-      else if (tx_owner != cfd)
-          dprintf(cfd, "ERR NOT_OWNER\n");
-      else
+      else if (!finalizar_tx())
           dprintf(cfd, "OK\n");
+      else
+          dprintf(cfd, "ERR NOT_OWNER\n");
       continue;
     }
     if (!strncasecmp(linea, "ROLLBACK", 8)) 
     {
-
-       if (!tx_active) {
-        dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
-        continue;
-        }
-        if (tx_owner != cfd) {
-            dprintf(cfd, "ERR NOT_OWNER\n");
-            continue;
-        }
-
-        /* restaurar snapshot + persistir CSV, luego cerrar TX */
-        int rc = csvdb_rollback_snapshot();
-        finalizar_tx();
-
-        if (rc == 0) dprintf(cfd, "OK\n");
-        else         dprintf(cfd, "ERR ROLLBACK_FAILED\n");
-        continue;
       // logica del rollback
-     /* if(!tx_active)
+      if(!tx_active)
         dprintf(cfd, "ERR NOT_TX_ACTIVE\n");
       else if (!finalizar_tx())
           dprintf(cfd, "OK\n");
       else
           dprintf(cfd, "ERR NOT_OWNER\n");
-      continue;*/
+      continue;
     }
 
     /* Si hay transacción activa, nadie puede consultar/modificar */
@@ -213,7 +125,7 @@ int main(int argc, char **argv)
   const char *host = "127.0.0.1";
   int port = 5000;
   int N = 4, M = 16;
-  const char *csv = "../e1/db.csv";
+  const char *csv = "../db.csv";
   for (int i = 1; i < argc; i++)
   {
     if (!strcmp(argv[i], "-H") && i + 1 < argc)
