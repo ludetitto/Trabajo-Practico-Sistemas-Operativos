@@ -49,7 +49,7 @@ demo_queue: all
 	@kill $$(cat .srvpid) >/dev/null 2>&1 || true; rm -f .srvpid
 
 # Ejecuta solo el servidor usando el CSV del E1
-run_server: all
+server: all
 	@if [ ! -f ../e1/productos.csv ]; then \
 	  echo "Falta ../e1/productos.csv (generalo con el Ejercicio 1 o crea uno)"; exit 1; \
 	fi
@@ -60,5 +60,5 @@ run_server: all
 client: all
 	@./bin/client -h 127.0.0.1 -p 5000
 
-.PHONY: all clean demo_queue run_server client
+.PHONY: all clean demo_queue server client
 
