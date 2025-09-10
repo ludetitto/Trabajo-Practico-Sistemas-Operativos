@@ -7,6 +7,12 @@
 #include <pthread.h>
 #include "../include/csvdb.h"
 
+/* ==== Snapshot de TX (BEGIN/COMMIT/ROLLBACK) ==== */
+static registro_t *snapshot      = NULL;
+static size_t      snapshot_tam  = 0;
+static size_t      snapshot_cap  = 0;
+static int         snapshot_on   = 0;
+
 /* ====== Estado global (BD en memoria) ====== */
 static char csv_path[512] = {0};
 static registro_t *productos = NULL;
@@ -15,8 +21,10 @@ static size_t productos_cap = 0;
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;    // protege productos[]
 
 /* ====== Helpers internos ====== */
-static void asegurar_capacidad(void) {
-    if (productos_tam == productos_cap) {
+static void asegurar_capacidad(void) 
+{
+    if (productos_tam == productos_cap) 
+    {
         size_t nueva_cap = productos_cap ? productos_cap * 2 : 128;
         registro_t *tmp = (registro_t*)realloc(productos, nueva_cap * sizeof(registro_t));
         if (!tmp) return;
@@ -26,19 +34,26 @@ static void asegurar_capacidad(void) {
 }
 
 /* compara subcadena case-insensitive: true si hay needle dentro de haystack */
-static int ci_contains(const char *haystack, const char *needle) {
-    if (!needle || !*needle) return 1;
-    if (!haystack) return 0;
+static int buscar_cadena(const char *nombre_producto, const char *buscado) 
+{
+    if (!buscado || !*buscado) 
+        return 1;
+    if (!nombre_producto) 
+        return 0;
     // búsqueda simple O(n*m) en minúsculas
-    for (const char *h = haystack; *h; ++h) {
-        const char *p = h, *q = needle;
-        while (*p && *q) {
+    for (const char *h = nombre_producto; *h; ++h) 
+    {
+        const char *p = h, *q = buscado;
+        while (*p && *q) 
+        {
             char c1 = (char)tolower((unsigned char)*p);
             char c2 = (char)tolower((unsigned char)*q);
-            if (c1 != c2) break;
+            if (c1 != c2) 
+                break;
             ++p; ++q;
         }
-        if (!*q) return 1;
+        if (!*q) 
+            return 1;
     }
     return 0;
 }
@@ -123,7 +138,8 @@ int recargar_arch(void) {
 }
 
 /* ===== CRUD ===== */
-int buscar_id_arch(int id, registro_t *out) {
+int buscar_id_arch(int id, registro_t *out) 
+{
     pthread_mutex_lock(&mtx);
     for (size_t i = 0; i < productos_tam; i++) {
         if (productos[i].id == id && !productos[i].borrado) {
@@ -136,7 +152,8 @@ int buscar_id_arch(int id, registro_t *out) {
     return -1;
 }
 
-int agregar_arch(const registro_t *r) {
+int agregar_arch(const registro_t *r) 
+{
     int maxid = 0, rc;
     if (!r) return -1;
 
@@ -155,7 +172,8 @@ int agregar_arch(const registro_t *r) {
     return rc;
 }
 
-int actualizar_arch(const registro_t *patch) {
+int actualizar_arch(const registro_t *patch) 
+{
     int rc = -1;
     if (!patch) return -1;
 
@@ -183,7 +201,7 @@ int eliminar_arch(int id) {
 
     pthread_mutex_lock(&mtx);                 // único lock
     for (size_t i = 0; i < productos_tam; i++) {
-        if (productos[i].id == id) {
+        if (productos[i].id == id && !productos[i].borrado) {
             productos[i].borrado = true;
             rc = guardar_arch_locked();       // evita doble lock
             pthread_mutex_unlock(&mtx);
@@ -194,28 +212,33 @@ int eliminar_arch(int id) {
     return -1;
 }
 
-/* ==== Snapshot de TX (BEGIN/COMMIT/ROLLBACK) ==== */
-static registro_t *snapshot      = NULL;
-static size_t      snapshot_tam  = 0;
-static size_t      snapshot_cap  = 0;
-static int         snapshot_on   = 0;
-
-int csvdb_begin_snapshot(void) {
+int generar_snapshot(void) 
+{
     pthread_mutex_lock(&mtx);
-    if (snapshot_on) { pthread_mutex_unlock(&mtx); return -1; }
+    if (snapshot_on) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
     snapshot_cap = productos_cap;
     snapshot_tam = productos_tam;
     snapshot = (registro_t*)malloc(sizeof(registro_t) * (snapshot_cap ? snapshot_cap : 1));
-    if (!snapshot) { pthread_mutex_unlock(&mtx); return -1; }
+    if (!snapshot) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
     if (productos_tam) memcpy(snapshot, productos, sizeof(registro_t) * productos_tam);
     snapshot_on = 1;
     pthread_mutex_unlock(&mtx);
     return 0;
 }
 
-int csvdb_commit_snapshot(void) {
+int guardar_snapshot(void) 
+{
     pthread_mutex_lock(&mtx);
-    if (snapshot_on) {
+    if (snapshot_on) 
+    {
         free(snapshot);
         snapshot = NULL;
         snapshot_tam = snapshot_cap = 0;
@@ -225,15 +248,28 @@ int csvdb_commit_snapshot(void) {
     return 0;
 }
 
-int csvdb_rollback_snapshot(void) {
-    pthread_mutex_lock(&mtx);
-    if (!snapshot_on) { pthread_mutex_unlock(&mtx); return -1; }
+int descartar_snapshot(void) 
+{
+    registro_t *tmp;
 
-    if (productos_cap < snapshot_cap) {
-        registro_t *tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_cap);
-        if (!tmp) {
+    pthread_mutex_lock(&mtx);
+    if (!snapshot_on) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+
+    if (productos_cap < snapshot_cap) 
+    {
+        tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_cap);
+        if (!tmp) 
+        {
             tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_tam);
-            if (!tmp) { pthread_mutex_unlock(&mtx); return -1; }
+            if (!tmp) 
+            { 
+                pthread_mutex_unlock(&mtx); 
+                return -2; 
+            }
             productos_cap = snapshot_tam;
         } else {
             productos_cap = snapshot_cap;
@@ -257,11 +293,13 @@ int csvdb_rollback_snapshot(void) {
 /* ===== NUEVO: búsquedas por nombre ===== */
 
 /* Primer match por subcadena (case-insensitive, no borrado) */
-int find_first_nombre_ci(const char *needle, registro_t *out) {
+int buscar_nombre_primero(const char *buscado, registro_t *out) {
     int rc = -1;
     pthread_mutex_lock(&mtx);
-    for (size_t i = 0; i < productos_tam; ++i) {
-        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle)) {
+    for (size_t i = 0; i < productos_tam; ++i) 
+    {
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado)) 
+        {
             if (out) *out = productos[i];
             rc = 0;
             break;
@@ -272,31 +310,38 @@ int find_first_nombre_ci(const char *needle, registro_t *out) {
 }
 
 /* Todas las coincidencias; devuelve array (malloc) y cantidad */
-int find_all_nombres_ci(const char *needle, registro_t **outs, size_t *count) {
-    if (!outs || !count) return -1;
-    *outs = NULL; *count = 0;
+int buscar_nombre_todos(const char *buscado, registro_t **outs, size_t *cont) {
+    size_t c = 0;
+    if (!outs || !cont) return -1;
+    *outs = NULL; *cont = 0;
 
     pthread_mutex_lock(&mtx);
     // 1ª pasada: contar
-    size_t c = 0;
     for (size_t i = 0; i < productos_tam; ++i)
-        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle))
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado))
             ++c;
 
-    if (c == 0) { pthread_mutex_unlock(&mtx); return -1; }
+    if (!c) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
 
     // 2ª pasada: copiar
-    registro_t *arr = (registro_t*)malloc(sizeof(registro_t) * c);
-    if (!arr) { pthread_mutex_unlock(&mtx); return -1; }
+    registro_t *vec = (registro_t*)malloc(sizeof(registro_t) * c);
+    if (!vec) { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
 
     size_t j = 0;
     for (size_t i = 0; i < productos_tam; ++i)
-        if (!productos[i].borrado && ci_contains(productos[i].nombre, needle))
-            arr[j++] = productos[i];
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado))
+            vec[j++] = productos[i];
 
     pthread_mutex_unlock(&mtx);
 
-    *outs = arr;
-    *count = c;
+    *outs = vec;
+    *cont = c;
     return 0;
 }
