@@ -1,52 +1,67 @@
 #ifndef CSVDB_H
 #define CSVDB_H
+
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <pthread.h>
+#include <ctype.h>
 
-#define NAME_MAXLEN  32
-#define EVT_MAXLEN   32
-#define EST_MAXLEN   16
+#define NOMBRE_MAXLEN    64
+#define TIMESTAMP_MAXLEN 20
 
-/* Registro base del E1 (persistente) */
+extern int tx_active;
+extern int tx_owner;
+extern pthread_mutex_t tx_mtx;
+
+/* Registro persistente en CSV (producto) */
 typedef struct {
-    int   id;
-    int   generador;
-    int   pid;
-    char  nombre[NAME_MAXLEN];
-} rec_base_t;
+    int id;
+    int generador;
+    pid_t pid;
+    char nombre[NOMBRE_MAXLEN];
+    float precio; // [1000.00, 100000.00]
+    uint32_t stock; // [0, 100]
+    char timestamp[TIMESTAMP_MAXLEN]; // timestamp
+    bool borrado;
+} registro_t;
 
-/* Nodo extendido en memoria (cola virtual) */
-typedef struct nodo {
-    rec_base_t base;          /* campos persistentes */
-    char evento[EVT_MAXLEN];  /* "Lollapalooza", "Cosquin Rock", "Bresh", "Primavera Sound" */
-    char estado[EST_MAXLEN];  /* "Esperando","Atendido","Cancelado" */
-    unsigned posicion;        /* posición dentro de su evento */
-    struct nodo *prev, *next;
-} nodo_t;
+/*
+int   id;
+    char  nombre[NOMBRE_MAXLEN]; 
+    float precio;   
+    uint32_t stock;   
+    char  timestamp[TIMESTAMP_MAXLEN]; 
+    bool  borrado; 
+*/
 
-/* Lista doble por evento */
-typedef struct {
-    nodo_t *head, *tail;
-    unsigned len;
-    unsigned contador; /* para calcular posiciones nuevas */
-} dll_t;
+/* Operaciones sobre el archivo CSV */
+int   abrir_arch(const char *csv_path);      /* abre/lee CSV */
+void  cerrar_arch(void);                     /* libera memoria */
+int   recargar_arch(void);                   /* recarga desde CSV */
+int   guardar_arch(void);                    /* guarda a CSV */
 
-/* Conjunto de colas por evento + almacenamiento lineal para búsquedas */
-int   db_open(const char *csv_path);      /* abre/lee CSV (E1) y crea colas por evento en memoria */
-void  db_close(void);                     /* libera memoria */
-int   db_reload(void);                    /* recarga desde CSV (descarta memoria actual) */
-int   db_save(void);                      /* guarda SOLO el esquema E1 (id,generador,pid,Nombre) */
+int   buscar_id_arch(int id, registro_t *out);
+int   agregar_arch(const registro_t *r);     /* agrega producto */
+int   actualizar_arch(const registro_t *patch); /* modifica producto */
+int   eliminar_arch(int id);                 /* borra producto */
+///agregado cisco
 
-int   db_find_id(int id, rec_base_t *out);
-int   db_add(const rec_base_t *r, const char *evento_opt); /* agrega a CSV y encola (evento aleatorio si NULL) */
-int   db_update(const rec_base_t *patch);                  /* actualiza por id base->nombre/generador/pid */
-int   db_delete(int id);                                   /* borra del CSV y saca de colas */
+int buscar_nombre_primero(const char *buscado, registro_t *out);
+/* Devuelve array con todas las coincidencias (malloc).
+   *outs y *count salen seteados; el caller debe free(*outs). */
+int buscar_nombre_todos(const char *buscado, registro_t **outs, size_t *cont);
 
-int   q_attend(const char *evento, rec_base_t *out);       /* atiende primero de un evento (cambia estado) */
-int   q_leave(int id);                                     /* alguien abandona la cola (Cancelado) */
-int   q_show(const char *evento, char *buf, size_t bufsz); /* lista texto de la cola del evento */
+//tavo
+int modificar_nombre_id(int id, const char* nombreNuevo, registro_t *out);
+int modificar_precio_id(int id, float precioNuevo, registro_t *out);
+int modificar_stock_id(int id, uint32_t stockNuevo, registro_t *out);
 
-const char* evt_random(void);
-int   evt_index(const char *e);            /* -1 si no existe */
-const char* evt_name_by_index(int idx);    /* nombre por índice */
+///AGREGADO -RO
+/* --- Snapshot para TX (BEGIN/COMMIT/ROLLBACK) --- */
+int generar_snapshot(void);     /* tomar snapshot in-memory */
+int guardar_snapshot(void);    /* descartar snapshot */
+int descartar_snapshot(void);  /* restaurar snapshot + guardar CSV */
+
 
 #endif

@@ -1,408 +1,402 @@
-#define _GNU_SOURCE 1
+// csvdb.c
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>  // strsep (con _GNU_SOURCE)
-#include <strings.h> // strcasecmp
+#include <string.h>
 #include <errno.h>
-#include <time.h>
 #include <pthread.h>
 #include "../include/csvdb.h"
 
-/* ====== Eventos soportados (coincidir con lo de E1) ====== */
-static const char *EVTS[] = {
-    "Lollapalooza",
-    "Cosquin Rock",
-    "Bresh",
-    "Primavera Sound"};
-#define EVT_COUNT (int)(sizeof(EVTS) / sizeof(EVTS[0]))
+/* ==== Snapshot de TX (BEGIN/COMMIT/ROLLBACK) ==== */
+static registro_t *snapshot      = NULL;
+static size_t      snapshot_tam  = 0;
+static size_t      snapshot_cap  = 0;
+static int         snapshot_on   = 0;
 
-/* ====== Estado global ====== */
-static char g_csv_path[512] = {0};
-static dll_t g_queues[EVT_COUNT];
-static nodo_t **g_all = NULL; /* vector de punteros a nodos (índice lineal) */
-static size_t g_all_cap = 0, g_all_len = 0;
+/* ====== Estado global (BD en memoria) ====== */
+static char csv_path[512] = {0};
+static registro_t *productos = NULL;
+static size_t productos_tam = 0;
+static size_t productos_cap = 0;
+static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;    // protege productos[]
 
-static pthread_mutex_t g_mtx = PTHREAD_MUTEX_INITIALIZER;
-
-/* ====== Utilitarios ====== */
-const char *evt_name_by_index(int idx) { return (idx >= 0 && idx < EVT_COUNT) ? EVTS[idx] : NULL; }
-int evt_index(const char *e)
+/* ====== Helpers internos ====== */
+static void asegurar_capacidad(void) 
 {
-  if (!e)
-    return -1;
-  for (int i = 0; i < EVT_COUNT; i++)
-    if (strcasecmp(e, EVTS[i]) == 0)
-      return i;
-  return -1;
-}
-const char *evt_random(void)
-{
-  static int seeded = 0;
-  if (!seeded)
-  {
-    srand((unsigned)time(NULL) ^ (unsigned)clock());
-    seeded = 1;
-  }
-  return EVTS[rand() % EVT_COUNT];
+    if (productos_tam == productos_cap) 
+    {
+        size_t nueva_cap = productos_cap ? productos_cap * 2 : 128;
+        registro_t *tmp = (registro_t*)realloc(productos, nueva_cap * sizeof(registro_t));
+        if (!tmp) return;
+        productos = tmp;
+        productos_cap = nueva_cap;
+    }
 }
 
-static void list_push_back(dll_t *L, nodo_t *n)
+/* compara subcadena case-insensitive: true si hay needle dentro de haystack */
+static int buscar_cadena(const char *nombre_producto, const char *buscado) 
 {
-  n->prev = L->tail;
-  n->next = NULL;
-  if (L->tail)
-    L->tail->next = n;
-  else
-    L->head = n;
-  L->tail = n;
-  L->len++;
-}
-static void list_remove(dll_t *L, nodo_t *n)
-{
-  if (n->prev)
-    n->prev->next = n->next;
-  else
-    L->head = n->next;
-  if (n->next)
-    n->next->prev = n->prev;
-  else
-    L->tail = n->prev;
-  L->len--;
-}
-static void all_push(nodo_t *n)
-{
-  if (g_all_len == g_all_cap)
-  {
-    size_t nc = g_all_cap ? g_all_cap * 2 : 128;
-    nodo_t **nv = (nodo_t **)realloc(g_all, nc * sizeof(nodo_t *));
-    if (!nv)
-      return;
-    g_all = nv;
-    g_all_cap = nc;
-  }
-  g_all[g_all_len++] = n;
-}
-static nodo_t *find_by_id(int id)
-{
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i]->base.id == id)
-      return g_all[i];
-  return NULL;
+    if (!buscado || !*buscado) 
+        return 1;
+    if (!nombre_producto) 
+        return 0;
+    // búsqueda simple O(n*m) en minúsculas
+    for (const char *h = nombre_producto; *h; ++h) 
+    {
+        const char *p = h, *q = buscado;
+        while (*p && *q) 
+        {
+            char c1 = (char)tolower((unsigned char)*p);
+            char c2 = (char)tolower((unsigned char)*q);
+            if (c1 != c2) 
+                break;
+            ++p; ++q;
+        }
+        if (!*q) 
+            return 1;
+    }
+    return 0;
 }
 
-/* ====== Lectura/Escritura de CSV (E1 schema) ======
-   Formato: id,generador,pid,Nombre
-*/
-static int parse_line_base(const char *s, rec_base_t *r)
-{
-  char tmp[256];
-  strncpy(tmp, s, sizeof(tmp) - 1);
-  tmp[sizeof(tmp) - 1] = 0;
-  char *p = tmp, *tok;
-  tok = strsep(&p, ",\r\n");
-  if (!tok)
-    return -1;
-  r->id = atoi(tok);
-  tok = strsep(&p, ",\r\n");
-  if (!tok)
-    return -1;
-  r->generador = atoi(tok);
-  tok = strsep(&p, ",\r\n");
-  if (!tok)
-    return -1;
-  r->pid = atoi(tok);
-  tok = strsep(&p, ",\r\n");
-  if (!tok)
-    return -1;
-  strncpy(r->nombre, tok, NAME_MAXLEN - 1);
-  r->nombre[NAME_MAXLEN - 1] = 0;
-  return 0;
+static int parsear_linea(const char *linea, registro_t *r) {
+    // id,generador,pid,nombre,precio,stock,timestamp,borrado
+    return sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
+                  &r->id, &r->generador, &r->pid, r->nombre,
+                  &r->precio, &r->stock, r->timestamp, (int*)&r->borrado) == 8 ? 0 : -1;
 }
 
-static int save_all_base(FILE *f)
-{
-  fprintf(f, "id,generador,pid,Nombre\n");
-  for (size_t i = 0; i < g_all_len; i++)
-  {
-    rec_base_t *b = &g_all[i]->base;
-    fprintf(f, "%d,%d,%d,%s\n", b->id, b->generador, b->pid, b->nombre);
-  }
-  return 0;
+/* Header consistente (8 columnas) + filas */
+static void guardar_todos(FILE *f) {
+    fprintf(f, "id,generador,pid,nombre,precio,stock,timestamp,borrado\n");
+    for (size_t i = 0; i < productos_tam; i++) {
+        registro_t *r = &productos[i];
+        fprintf(f, "%d,%d,%d,%s,%.2f,%u,%s,%d\n",
+                r->id, r->generador, r->pid, r->nombre,
+                r->precio, r->stock, r->timestamp, r->borrado ? 1 : 0);
+    }
 }
 
-/* ====== Carga desde CSV del E1 y construcción de colas ====== */
-int db_open(const char *csv_path)
-{
-  pthread_mutex_lock(&g_mtx);
-  strncpy(g_csv_path, csv_path, sizeof(g_csv_path) - 1);
-  for (int i = 0; i < EVT_COUNT; i++)
-  {
-    g_queues[i].head = g_queues[i].tail = NULL;
-    g_queues[i].len = 0;
-    g_queues[i].contador = 0;
-  }
-  free(g_all);
-  g_all = NULL;
-  g_all_cap = g_all_len = 0;
-
-  FILE *f = fopen(g_csv_path, "r");
-  if (!f)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-
-  char line[512];
-  if (!fgets(line, sizeof(line), f))
-  {
+/* ====== Guardado en CSV ====== */
+static int guardar_arch_locked(void) {        // NO toma mtx
+    FILE *f = fopen(csv_path, "w");
+    if (!f) return -1;
+    guardar_todos(f);
     fclose(f);
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  if (strncasecmp(line, "id,generador,pid,Nombre", 23) != 0)
-  {
-    rec_base_t r;
-    if (parse_line_base(line, &r) == 0)
-    {
-      nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-      n->base = r;
-      strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-      strncpy(n->evento, evt_random(), EVT_MAXLEN - 1);
-      int ei = evt_index(n->evento);
-      if (ei < 0)
-        ei = 0;
-      n->posicion = ++g_queues[ei].contador;
-      list_push_back(&g_queues[ei], n);
-      all_push(n);
+    return 0;
+}
+int guardar_arch(void) {                      // SÍ toma mtx
+    int rc;
+    pthread_mutex_lock(&mtx);
+    rc = guardar_arch_locked();
+    pthread_mutex_unlock(&mtx);
+    return rc;
+}
+
+/* ====== API pública ====== */
+int abrir_arch(const char *path) {
+    FILE *f;
+    char linea[512];
+
+    pthread_mutex_lock(&mtx);
+    strncpy(csv_path, path, sizeof(csv_path)-1);
+
+    free(productos);
+    productos = NULL;
+    productos_tam = productos_cap = 0;
+
+    f = fopen(path, "r");
+    if (!f) { pthread_mutex_unlock(&mtx); return -1; }
+
+ if (!fgets(linea, sizeof(linea), f)) {
+        fclose(f);
+        pthread_mutex_unlock(&mtx);
+        return -1; // archivo vacío o error
     }
-  }
-  while (fgets(line, sizeof(line), f))
-  {
-    rec_base_t r;
-    if (parse_line_base(line, &r) != 0)
-      continue;
-    nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-    n->base = r;
-    strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-    strncpy(n->evento, evt_random(), EVT_MAXLEN - 1);
-    int ei = evt_index(n->evento);
-    if (ei < 0)
-      ei = 0;
-    n->posicion = ++g_queues[ei].contador;
-    list_push_back(&g_queues[ei], n);
-    all_push(n);
-  }
-  fclose(f);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
-}
-
-void db_close(void)
-{
-  pthread_mutex_lock(&g_mtx);
-  for (size_t i = 0; i < g_all_len; i++)
-    free(g_all[i]);
-  free(g_all);
-  g_all = NULL;
-  g_all_cap = g_all_len = 0;
-  for (int i = 0; i < EVT_COUNT; i++)
-  {
-    g_queues[i].head = g_queues[i].tail = NULL;
-    g_queues[i].len = 0;
-    g_queues[i].contador = 0;
-  }
-  pthread_mutex_unlock(&g_mtx);
-}
-
-int db_reload(void)
-{
-  db_close();
-  return db_open(g_csv_path);
-}
-
-int db_save(void)
-{
-  pthread_mutex_lock(&g_mtx);
-  FILE *f = fopen(g_csv_path, "w");
-  if (!f)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  save_all_base(f);
-  fclose(f);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
-}
-
-/* ====== CRUD base ====== */
-int db_find_id(int id, rec_base_t *out)
-{
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  if (out)
-    *out = n->base;
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
-}
-
-int db_add(const rec_base_t *r, const char *evento_opt)
-{
-  if (!r)
-    return -1;
-  pthread_mutex_lock(&g_mtx);
-  int maxid = 0;
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i]->base.id > maxid)
-      maxid = g_all[i]->base.id;
-  nodo_t *n = (nodo_t *)calloc(1, sizeof(nodo_t));
-  n->base = *r;
-  if (n->base.id == 0)
-    n->base.id = maxid + 1;
-  const char *ev = (evento_opt && *evento_opt) ? evento_opt : evt_random();
-  strncpy(n->evento, ev, EVT_MAXLEN - 1);
-  strncpy(n->estado, "Esperando", EST_MAXLEN - 1);
-  int ei = evt_index(n->evento);
-  if (ei < 0)
-    ei = 0;
-  n->posicion = ++g_queues[ei].contador;
-  list_push_back(&g_queues[ei], n);
-  all_push(n);
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
-  return rc;
-}
-
-int db_update(const rec_base_t *patch)
-{
-  if (!patch)
-    return -1;
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(patch->id);
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  if (patch->nombre[0])
-    snprintf(n->base.nombre, NAME_MAXLEN, "%s", patch->nombre);
-  if (patch->generador)
-    n->base.generador = patch->generador;
-  if (patch->pid)
-    n->base.pid = patch->pid;
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
-  return rc;
-}
-
-int db_delete(int id)
-{
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  int ei = evt_index(n->evento);
-  if (ei < 0)
-    ei = 0;
-  list_remove(&g_queues[ei], n);
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
-    {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
-      break;
+    while (fgets(linea, sizeof(linea), f)) {
+        registro_t r = {0};
+        if (!parsear_linea(linea, &r)) {
+            asegurar_capacidad();
+            productos[productos_tam++] = r;
+        }
     }
-  free(n);
-  int rc = db_save();
-  pthread_mutex_unlock(&g_mtx);
-  return rc;
+
+    fclose(f);
+    pthread_mutex_unlock(&mtx);
+    return 0;
 }
 
-/* ====== Operaciones de cola ====== */
-int q_attend(const char *evento, rec_base_t *out)
+void cerrar_arch(void) {
+    pthread_mutex_lock(&mtx);
+    free(productos);
+    productos = NULL;
+    productos_tam = productos_cap = 0;
+    pthread_mutex_unlock(&mtx);
+}
+
+int recargar_arch(void) {
+    return abrir_arch(csv_path);
+}
+
+/* ===== CRUD ===== */
+int buscar_id_arch(int id, registro_t *out) 
 {
-  pthread_mutex_lock(&g_mtx);
-  int ei = evt_index(evento);
-  if (ei < 0)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  nodo_t *n = g_queues[ei].head;
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -2;
-  } /* cola vacía */
-  list_remove(&g_queues[ei], n);
-  /* remover del índice global y devolver */
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
-    {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
-      break;
+    pthread_mutex_lock(&mtx);
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
+            if (out) *out = productos[i];
+            pthread_mutex_unlock(&mtx);
+            return 0;
+        }
     }
-  if (out)
-    *out = n->base;
-  free(n);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
+    pthread_mutex_unlock(&mtx);
+    return -1;
 }
 
-int q_leave(int id)
+int agregar_arch(const registro_t *r) 
 {
-  pthread_mutex_lock(&g_mtx);
-  nodo_t *n = find_by_id(id);
-  if (!n)
-  {
-    pthread_mutex_unlock(&g_mtx);
-    return -1;
-  }
-  int ei = evt_index(n->evento);
-  if (ei < 0)
-    ei = 0;
-  list_remove(&g_queues[ei], n);
-  for (size_t i = 0; i < g_all_len; i++)
-    if (g_all[i] == n)
-    {
-      g_all[i] = g_all[g_all_len - 1];
-      g_all_len--;
-      break;
+    int maxid = 0, rc;
+    if (!r) return -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++)
+        if (productos[i].id > maxid) maxid = productos[i].id;
+
+    registro_t nuevo = *r;
+    if (!nuevo.id) nuevo.id = maxid + 1;
+
+    asegurar_capacidad();
+    productos[productos_tam++] = nuevo;
+
+    rc = guardar_arch_locked();               // evita doble lock
+    pthread_mutex_unlock(&mtx);
+    return rc;
+}
+
+int actualizar_arch(const registro_t *patch) 
+{
+    int rc = -1;
+    if (!patch) return -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == patch->id) {
+            if (patch->nombre[0]) {
+                strncpy(productos[i].nombre, patch->nombre, NOMBRE_MAXLEN - 1);
+                productos[i].nombre[NOMBRE_MAXLEN - 1] = '\0';
+            }
+            if (patch->precio > 0) productos[i].precio = patch->precio;
+            productos[i].stock = patch->stock;
+
+            rc = guardar_arch_locked();       // evita doble lock
+            pthread_mutex_unlock(&mtx);
+            return rc;
+        }
     }
-  free(n);
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
+    pthread_mutex_unlock(&mtx);
+    return -1;
 }
 
-int q_show(const char *evento, char *buf, size_t bufsz)
+int eliminar_arch(int id) {
+    int rc = -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
+            productos[i].borrado = true;
+            rc = guardar_arch_locked();       // evita doble lock
+            pthread_mutex_unlock(&mtx);
+            return rc;
+        }
+    }
+    pthread_mutex_unlock(&mtx);
+    return -1;
+}
+
+int generar_snapshot(void) 
 {
-  if (!buf || bufsz < 4)
+    pthread_mutex_lock(&mtx);
+    if (snapshot_on) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+    snapshot_cap = productos_cap;
+    snapshot_tam = productos_tam;
+    snapshot = (registro_t*)malloc(sizeof(registro_t) * (snapshot_cap ? snapshot_cap : 1));
+    if (!snapshot) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+    if (productos_tam) memcpy(snapshot, productos, sizeof(registro_t) * productos_tam);
+    snapshot_on = 1;
+    pthread_mutex_unlock(&mtx);
+    return 0;
+}
+
+int guardar_snapshot(void) 
+{
+    pthread_mutex_lock(&mtx);
+    if (snapshot_on) 
+    {
+        free(snapshot);
+        snapshot = NULL;
+        snapshot_tam = snapshot_cap = 0;
+        snapshot_on = 0;
+    }
+    pthread_mutex_unlock(&mtx);
+    return 0;
+}
+
+int descartar_snapshot(void) 
+{
+    registro_t *tmp;
+
+    pthread_mutex_lock(&mtx);
+    if (!snapshot_on) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+
+    if (productos_cap < snapshot_cap) 
+    {
+        tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_cap);
+        if (!tmp) 
+        {
+            tmp = (registro_t*)realloc(productos, sizeof(registro_t) * snapshot_tam);
+            if (!tmp) 
+            { 
+                pthread_mutex_unlock(&mtx); 
+                return -2; 
+            }
+            productos_cap = snapshot_tam;
+        } else {
+            productos_cap = snapshot_cap;
+        }
+        productos = tmp;
+    }
+
+    if (snapshot_tam) memcpy(productos, snapshot, sizeof(registro_t) * snapshot_tam);
+    productos_tam = snapshot_tam;
+
+    free(snapshot);
+    snapshot = NULL;
+    snapshot_tam = snapshot_cap = 0;
+    snapshot_on = 0;
+
+    int rc = guardar_arch_locked();           // persiste lo restaurado
+    pthread_mutex_unlock(&mtx);
+    return rc;
+}
+
+/* ===== NUEVO: búsquedas por nombre ===== */
+
+/* Primer match por subcadena (case-insensitive, no borrado) */
+int buscar_nombre_primero(const char *buscado, registro_t *out) {
+    int rc = -1;
+    pthread_mutex_lock(&mtx);
+    for (size_t i = 0; i < productos_tam; ++i) 
+    {
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado)) 
+        {
+            if (out) *out = productos[i];
+            rc = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mtx);
+    return rc; // 0 si encontró, -1 si no
+}
+
+/* Todas las coincidencias; devuelve array (malloc) y cantidad */
+int buscar_nombre_todos(const char *buscado, registro_t **outs, size_t *cont) {
+    size_t c = 0;
+    if (!outs || !cont) return -1;
+    *outs = NULL; *cont = 0;
+
+    pthread_mutex_lock(&mtx);
+    // 1ª pasada: contar
+    for (size_t i = 0; i < productos_tam; ++i)
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado))
+            ++c;
+
+    if (!c) 
+    { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+
+    // 2ª pasada: copiar
+    registro_t *vec = (registro_t*)malloc(sizeof(registro_t) * c);
+    if (!vec) { 
+        pthread_mutex_unlock(&mtx); 
+        return -1; 
+    }
+
+    size_t j = 0;
+    for (size_t i = 0; i < productos_tam; ++i)
+        if (!productos[i].borrado && buscar_cadena(productos[i].nombre, buscado))
+            vec[j++] = productos[i];
+
+    pthread_mutex_unlock(&mtx);
+
+    *outs = vec;
+    *cont = c;
+    return 0;
+}
+
+/*Modifica campo por id del producto*/
+int modificar_nombre_id(int id, const char* nombreNuevo, registro_t *out) {
+    int rc = -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
+            strcpy(productos[i].nombre, nombreNuevo);
+            if (out) *out = productos[i];
+            rc = guardar_arch_locked();       // evita doble lock
+            pthread_mutex_unlock(&mtx);
+            return rc;
+        }
+    }
+    pthread_mutex_unlock(&mtx);
     return -1;
-  pthread_mutex_lock(&g_mtx);
-  int ei = evt_index(evento);
-  if (ei < 0)
-  {
-    pthread_mutex_unlock(&g_mtx);
+}
+
+int modificar_precio_id(int id, float precioNuevo, registro_t *out) {
+    int rc = -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    if (precioNuevo >= 0) {
+        for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
+            productos[i].precio = precioNuevo;
+            if (out) *out = productos[i];
+            rc = guardar_arch_locked();       // evita doble lock
+            pthread_mutex_unlock(&mtx);
+            return rc;
+        }
+        }
+    }
+    
+    pthread_mutex_unlock(&mtx);
     return -1;
-  }
-  size_t off = 0;
-  off += (size_t)snprintf(buf + off, bufsz - off, "RESULT %u\n", g_queues[ei].len);
-  for (nodo_t *p = g_queues[ei].head; p && off + 64 < bufsz; p = p->next)
-  {
-    off += (size_t)snprintf(buf + off, bufsz - off, "%d,%s,%s,%u\n",
-                            p->base.id, p->base.nombre, "Esperando", p->posicion);
-  }
-  off += (size_t)snprintf(buf + off, bufsz - off, "END\n");
-  pthread_mutex_unlock(&g_mtx);
-  return 0;
+}
+
+int modificar_stock_id(int id, uint32_t stockNuevo, registro_t *out) {
+    int rc = -1;
+
+    pthread_mutex_lock(&mtx);                 // único lock
+    for (size_t i = 0; i < productos_tam; i++) {
+        if (productos[i].id == id && !productos[i].borrado) {
+            productos[i].stock = stockNuevo;
+            if (out) *out = productos[i];
+            rc = guardar_arch_locked();       // evita doble lock
+            pthread_mutex_unlock(&mtx);
+            return rc;
+        }
+    }
+    pthread_mutex_unlock(&mtx);
+    return -1;
 }

@@ -64,16 +64,18 @@ void semilla_randrec(void)
     }
 }
 
-static inline float rand_rango_float(float lo, float hi)
+static inline float rand_rango_float(float limInf, float limSup)
 {
-    float u = (float)rand() / (float)RAND_MAX;
-    return lo + u * (hi - lo);
+    float n = (float)rand() / (float)RAND_MAX;
+    return limInf + n * (limSup - limInf);
 }
 
 void generar_randrec(registro_t *r, uint32_t id, int generar_idx)
 {
     semilla_randrec();
     memset(r, 0, sizeof(*r));
+    char buffer_aux[64];
+    const time_t ahora = time(NULL);
 
     r->id = id;
     r->generador = generar_idx;
@@ -87,4 +89,7 @@ void generar_randrec(registro_t *r, uint32_t id, int generar_idx)
     // Precio [1000.00, 100000.00] y Stock [0..100]
     r->precio = rand_rango_float(1000.0f, 100000.0f);
     r->stock = (uint32_t)(rand() % 101);
+    strftime(buffer_aux, sizeof(buffer_aux), "%Y-%m-%d %H:%M:%S", localtime(&ahora));
+    strcpy(r->timestamp,buffer_aux);
+    r->borrado = 0;
 }

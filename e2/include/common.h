@@ -21,19 +21,20 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <time.h>
 
-#define NAME_MAXLEN 32
-#define LINE_MAX    1024
-
-static inline void die(const char* fmt, ...) {
-  va_list ap; va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap); va_end(ap);
-  fputc('\n', stderr);
-  exit(EXIT_FAILURE);
+/* Utilidades comunes */
+static inline void morir(const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap); va_end(ap);
+    fputc('\n', stderr);
+    exit(EXIT_FAILURE);
 }
+
 static inline void trim_nl(char *s){
-  if(!s) return;
-  size_t n=strlen(s); if(n && (s[n-1]=='\n' || s[n-1]=='\r')) s[n-1]=0;
+    if(!s) return;
+    size_t n = strlen(s);
+    if(n && (s[n-1]=='\n' || s[n-1]=='\r')) s[n-1] = 0;
 }
 
 #endif
