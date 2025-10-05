@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
+#include <ctype.h>
 #include "../include/csvdb.h"
 
 /* ==== Snapshot de TX (BEGIN/COMMIT/ROLLBACK) ==== */
@@ -60,9 +61,13 @@ static int buscar_cadena(const char *nombre_producto, const char *buscado)
 
 static int parsear_linea(const char *linea, registro_t *r) {
     // id,generador,pid,nombre,precio,stock,timestamp,borrado
-    return sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
-                  &r->id, &r->generador, &r->pid, r->nombre,
-                  &r->precio, &r->stock, r->timestamp, (int*)&r->borrado) == 8 ? 0 : -1;
+    int tmp_pid = 0, tmp_borr = 0;
+    int ok = sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
+                    &r->id, &r->generador, &tmp_pid, r->nombre,
+                    &r->precio, &r->stock, r->timestamp, &tmp_borr);
+    r->pid = (pid_t)tmp_pid;
+    r->borrado = (tmp_borr != 0);
+    return ok == 8 ? 0 : -1;
 }
 
 /* Header consistente (8 columnas) + filas */
@@ -71,7 +76,7 @@ static void guardar_todos(FILE *f) {
     for (size_t i = 0; i < productos_tam; i++) {
         registro_t *r = &productos[i];
         fprintf(f, "%d,%d,%d,%s,%.2f,%u,%s,%d\n",
-                r->id, r->generador, r->pid, r->nombre,
+                r->id, r->generador, (int)r->pid, r->nombre,
                 r->precio, r->stock, r->timestamp, r->borrado ? 1 : 0);
     }
 }
@@ -107,7 +112,7 @@ int abrir_arch(const char *path) {
     f = fopen(path, "r");
     if (!f) { pthread_mutex_unlock(&mtx); return -1; }
 
- if (!fgets(linea, sizeof(linea), f)) {
+    if (!fgets(linea, sizeof(linea), f)) {
         fclose(f);
         pthread_mutex_unlock(&mtx);
         return -1; // archivo vacío o error
@@ -346,14 +351,17 @@ int buscar_nombre_todos(const char *buscado, registro_t **outs, size_t *cont) {
     return 0;
 }
 
-/*Modifica campo por id del producto*/
+/* ==== Modificaciones por ID ==== */
+
+/* Modifica nombre por id del producto */
 int modificar_nombre_id(int id, const char* nombreNuevo, registro_t *out) {
     int rc = -1;
 
     pthread_mutex_lock(&mtx);                 // único lock
     for (size_t i = 0; i < productos_tam; i++) {
         if (productos[i].id == id && !productos[i].borrado) {
-            strcpy(productos[i].nombre, nombreNuevo);
+            strncpy(productos[i].nombre, nombreNuevo, NOMBRE_MAXLEN - 1);
+            productos[i].nombre[NOMBRE_MAXLEN - 1] = '\0';
             if (out) *out = productos[i];
             rc = guardar_arch_locked();       // evita doble lock
             pthread_mutex_unlock(&mtx);
@@ -370,16 +378,15 @@ int modificar_precio_id(int id, float precioNuevo, registro_t *out) {
     pthread_mutex_lock(&mtx);                 // único lock
     if (precioNuevo >= 0) {
         for (size_t i = 0; i < productos_tam; i++) {
-        if (productos[i].id == id && !productos[i].borrado) {
-            productos[i].precio = precioNuevo;
-            if (out) *out = productos[i];
-            rc = guardar_arch_locked();       // evita doble lock
-            pthread_mutex_unlock(&mtx);
-            return rc;
-        }
+            if (productos[i].id == id && !productos[i].borrado) {
+                productos[i].precio = precioNuevo;
+                if (out) *out = productos[i];
+                rc = guardar_arch_locked();   // evita doble lock
+                pthread_mutex_unlock(&mtx);
+                return rc;
+            }
         }
     }
-    
     pthread_mutex_unlock(&mtx);
     return -1;
 }
