@@ -23,24 +23,6 @@ static void safe_copy(char *dst, size_t dstsz, const char *src) {
     dst[n] = '\0';
 }
 
-static void safe_cat_raw(char *dst, size_t *used_io, size_t cap, const char *src, size_t src_len) {
-    if (!dst || !used_io || !src || cap == 0) return;
-    size_t used = *used_io;
-    if (used >= cap - 1) return;
-    size_t avail  = cap - 1 - used;
-    size_t tocopy = (src_len < avail) ? src_len : avail;
-    if (tocopy > 0) {
-        memcpy(dst + used, src, tocopy);
-        used += tocopy;
-        dst[used] = '\0';
-    }
-    *used_io = used;
-}
-
-static void safe_cat_cstr(char *dst, size_t *used_io, size_t cap, const char *src) {
-    safe_cat_raw(dst, used_io, cap, src, strlen(src));
-}
-
 /* =========================
    Helpers de parsing
    ========================= */
@@ -58,152 +40,169 @@ static void upper(char *s) {
 }
 
 /* =========================
+   parseo CSV: Nombre,precio,stock
+   ========================= */
+static int parse_add_csv(const char *args, char *nombre_out, float *precio_out, int *stock_out) {
+    char nom_tmp[NOMBRE_MAXLEN];
+    float pr = 0.0f;
+    int st = 0;
+
+    if (sscanf(args, " %63[^,] , %f , %d ", nom_tmp, &pr, &st) == 3) {
+        /* trim del nombre */
+        size_t L = strlen(nom_tmp);
+        while (L && isspace((unsigned char)nom_tmp[L-1])) nom_tmp[--L] = 0;
+        while (*nom_tmp && isspace((unsigned char)*nom_tmp)) memmove(nom_tmp, nom_tmp+1, --L);
+
+        safe_copy(nombre_out, NOMBRE_MAXLEN, nom_tmp);
+        *precio_out = pr;
+        *stock_out  = st;
+        return 0;
+    }
+    return -1;
+}
+
+/* =========================
+   parseo k=v: nombre=... precio=... stock=...
+   – orden libre
+   – nombre con o sin comillas
+   ========================= */
+/* =========================
+   parseo k=v: nombre=... precio=... stock=...
+   – orden libre
+   – nombre con o sin comillas
+   – SIN comillas: junta palabras siguientes del nombre hasta encontrar otra clave con '='
+   ========================= */
+static int parse_add_kv(const char *args, char *nombre_out, float *precio_out, int *stock_out) {
+    const char *s = args;
+    char nombre[NOMBRE_MAXLEN] = {0};
+    float precio = -1.0f;
+    int stock = -1;
+
+    while (*s) {
+        /* saltar espacios */
+        while (*s && isspace((unsigned char)*s)) s++;
+        if (!*s) break;
+
+        /* leer clave hasta '=' o espacio */
+        const char *kstart = s;
+        while (*s && !isspace((unsigned char)*s) && *s != '=') s++;
+        const char *kend = s;
+
+        /* permitir "k = v" con espacios */
+        while (*s && isspace((unsigned char)*s)) s++;
+        if (*s != '=') {
+            /* no es k=...; saltar este token suelto */
+            while (*s && !isspace((unsigned char)*s)) s++;
+            continue;
+        }
+        s++; /* '=' */
+
+        /* normalizar clave a minúsculas */
+        char kbuf[32];
+        size_t klen = (size_t)(kend - kstart);
+        if (klen >= sizeof(kbuf)) klen = sizeof(kbuf) - 1;
+        memcpy(kbuf, kstart, klen); kbuf[klen] = '\0';
+        for (char *q = kbuf; *q; ++q) *q = (char)tolower((unsigned char)*q);
+
+        /* saltar espacios previos al valor */
+        while (*s && isspace((unsigned char)*s)) s++;
+
+        /* leer valor base (comillado o simple) */
+        char vbuf[256]; size_t vused = 0;
+        int valor_comillado = 0;
+        if (*s == '"') {
+            valor_comillado = 1;
+            s++; /* abrir comillas */
+            while (*s && *s != '"' && vused < sizeof(vbuf)-1) vbuf[vused++] = *s++;
+            vbuf[vused] = '\0';
+            if (*s == '"') s++; /* cerrar comillas */
+        } else {
+            while (*s && !isspace((unsigned char)*s) && vused < sizeof(vbuf)-1) vbuf[vused++] = *s++;
+            vbuf[vused] = '\0';
+        }
+
+        if (!strcmp(kbuf, "precio")) {
+            precio = (float)atof(vbuf);
+        } else if (!strcmp(kbuf, "stock")) {
+            stock = atoi(vbuf);
+        } else if (!strcmp(kbuf, "nombre") || !strcmp(kbuf, "producto")) {
+            /* copiar valor base */
+            size_t used = 0;
+            nombre[0] = '\0';
+            if (vbuf[0]) {
+                size_t n = strlen(vbuf);
+                if (n >= NOMBRE_MAXLEN) n = NOMBRE_MAXLEN - 1;
+                memcpy(nombre, vbuf, n);
+                nombre[n] = '\0';
+                used = n;
+            }
+
+            if (!valor_comillado) {
+                /* SIN comillas: pegar tokens sueltos del nombre hasta ver otro '=' */
+                const char *look = s;
+                while (1) {
+                    /* mirar siguiente palabra */
+                    while (*look && isspace((unsigned char)*look)) look++;
+                    if (!*look) { s = look; break; }
+
+                    const char *ls = look;
+                    while (*look && !isspace((unsigned char)*look)) look++;
+                    size_t llen = (size_t)(look - ls);
+                    if (llen == 0) { s = look; break; }
+
+                    /* copiar palabra a tmp y ver si es otra clave (contiene '=') */
+                    char nxt[256];
+                    if (llen >= sizeof(nxt)) llen = sizeof(nxt) - 1;
+                    memcpy(nxt, ls, llen); nxt[llen] = '\0';
+
+                    if (strchr(nxt, '=')) {
+                        /* es otra clave -> no la consumimos aquí; dejamos s en ls para que el while exterior la lea */
+                        s = ls;
+                        break;
+                    }
+
+                    /* es parte del nombre -> la pegamos */
+                    if (used < NOMBRE_MAXLEN - 1) {
+                        nombre[used++] = ' ';
+                        nombre[used] = '\0';
+                    }
+                    size_t add = strlen(nxt);
+                    if (add > NOMBRE_MAXLEN - 1 - used) add = NOMBRE_MAXLEN - 1 - used;
+                    memcpy(nombre + used, nxt, add);
+                    used += add;
+                    nombre[used] = '\0';
+
+                    /* consumimos la palabra en s */
+                    s = look;
+                }
+            } else {
+                /* valor comillado ya quedó completo en vbuf */
+                /* s ya apunta al primer espacio después de la comilla de cierre */
+            }
+        }
+
+        /* sigue el loop para más k=v */
+    }
+
+    if (nombre[0] && precio >= 0.0f && stock >= 0) {
+        size_t nlen = strlen(nombre);
+        if (nlen >= NOMBRE_MAXLEN) nlen = NOMBRE_MAXLEN - 1;
+        memcpy(nombre_out, nombre, nlen);
+        nombre_out[nlen] = '\0';
+        *precio_out = precio;
+        *stock_out  = stock;
+        return 0;
+    }
+    return -1;
+}
+
+
+/* =========================
    parseo de ADD (CSV o k=v)
    ========================= */
 static int parse_add_any(const char *args, char *nombre_out, float *precio_out, int *stock_out) {
-    /* ---- 1) CSV: Nombre,precio,stock ---- */
-    {
-        char nom_tmp[NOMBRE_MAXLEN]; float pr = 0.0f; int st = 0;
-        if (sscanf(args, " %63[^,] , %f , %d ", nom_tmp, &pr, &st) == 3) {
-            /* trim del nombre */
-            size_t L = strlen(nom_tmp);
-            while (L && isspace((unsigned char)nom_tmp[L-1])) nom_tmp[--L] = 0;
-            while (*nom_tmp && isspace((unsigned char)*nom_tmp)) memmove(nom_tmp, nom_tmp+1, --L);
-            safe_copy(nombre_out, NOMBRE_MAXLEN, nom_tmp);
-            *precio_out = pr;
-            *stock_out  = st;
-            return 0;
-        }
-    }
-
-    /* ---- 2) k=v: nombre=... precio=... stock=... (orden libre) ---- */
-    {
-        char nombre[NOMBRE_MAXLEN] = {0};
-        float precio = -1.0f;
-        int stock = -1;
-
-        const char *p = args;
-        while (*p) {
-            while (*p && isspace((unsigned char)*p)) p++;
-            if (!*p) break;
-
-            /* token hasta espacio */
-            const char *start = p;
-            while (*p && !isspace((unsigned char)*p)) p++;
-            size_t len = (size_t)(p - start);
-            if (len == 0) continue;
-
-            char tok[256];
-            if (len >= sizeof(tok)) len = sizeof(tok) - 1;
-            memcpy(tok, start, len); tok[len] = '\0';
-
-            char *eq = strchr(tok, '=');
-            if (!eq) {
-                /* token suelto sin '=', solo se usa como parte del nombre si ya venimos armando */
-                continue;
-            }
-
-            *eq = '\0';
-            char *k = tok;
-            char *v = eq + 1;
-            for (char *q = k; *q; ++q) *q = (char)tolower((unsigned char)*q);
-
-            if (!strcmp(k, "precio")) {
-                precio = (float)atof(v);
-            } else if (!strcmp(k, "stock")) {
-                stock = atoi(v);
-            } else if (!strcmp(k, "nombre") || !strcmp(k, "producto")) {
-                /* nombre puede tener espacios y/o venir entre comillas */
-                size_t used = 0;
-                nombre[0] = '\0';
-
-                /* caso comillado: nombre="Joystick PS5"   */
-                if (v[0] == '"') {
-                    /* quitar primera comilla */
-                    v++; 
-                    /* copiar lo que sigue en este token hasta fin (puede no cerrar aún) */
-                    safe_copy(nombre, NOMBRE_MAXLEN, v);
-                    used = strlen(nombre);
-
-                    /* si el token actual ya cerraba con comilla */
-                    size_t L = strlen(nombre);
-                    if (L > 0 && nombre[L-1] == '"') {
-                        nombre[L-1] = '\0'; /* quitar comilla final */
-                        used = strlen(nombre);
-                    } else {
-                        /* seguir consumiendo tokens hasta encontrar " de cierre */
-                        const char *look = p;
-                        int cerrado = 0;
-                        while (*look && !cerrado) {
-                            while (*look && isspace((unsigned char)*look)) look++;
-                            if (!*look) break;
-
-                            const char *ls = look;
-                            while (*look && !isspace((unsigned char)*look)) look++;
-                            size_t llen = (size_t)(look - ls);
-                            if (llen == 0) break;
-
-                            char nxt[256];
-                            if (llen >= sizeof(nxt)) llen = sizeof(nxt) - 1;
-                            memcpy(nxt, ls, llen); nxt[llen] = '\0';
-
-                            /* ¿cierra con comilla? */
-                            size_t NL = strlen(nxt);
-                            if (NL > 0 && nxt[NL-1] == '"') {
-                                nxt[NL-1] = '\0'; /* quitar comilla final */
-                                if (used < NOMBRE_MAXLEN - 1) safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, " ");
-                                safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, nxt);
-                                cerrado = 1;
-                                p = look; /* avanzar p porque consumimos este token */
-                                break;
-                            } else {
-                                if (used < NOMBRE_MAXLEN - 1) safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, " ");
-                                safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, nxt);
-                                p = look; /* consumimos el token como parte del nombre */
-                            }
-                        }
-                        /* si no encontramos cierre, igual seguimos con lo recabado */
-                    }
-                } else {
-                    /* sin comillas: nombre=Joystick PS5 ...  -> glue hasta ver otra clave con '=' */
-                    safe_copy(nombre, NOMBRE_MAXLEN, v);
-                    used = strlen(nombre);
-
-                    const char *look = p;
-                    while (*look) {
-                        while (*look && isspace((unsigned char)*look)) look++;
-                        if (!*look) break;
-
-                        const char *ls = look;
-                        while (*look && !isspace((unsigned char)*look)) look++;
-                        size_t llen = (size_t)(look - ls);
-                        if (llen == 0) break;
-
-                        char nxt[256];
-                        if (llen >= sizeof(nxt)) llen = sizeof(nxt) - 1;
-                        memcpy(nxt, ls, llen); nxt[llen] = '\0';
-
-                        if (strchr(nxt, '=')) {
-                            /* otra clave -> dejamos que el while exterior la procese */
-                            break;
-                        } else {
-                            if (used < NOMBRE_MAXLEN - 1) safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, " ");
-                            safe_cat_cstr(nombre, &used, NOMBRE_MAXLEN, nxt);
-                            p = look; /* consumimos el token como parte del nombre */
-                        }
-                    }
-                }
-            }
-        }
-
-        if (nombre[0] && precio >= 0.0f && stock >= 0) {
-            safe_copy(nombre_out, NOMBRE_MAXLEN, nombre);
-            *precio_out = precio;
-            *stock_out  = stock;
-            return 0;
-        }
-    }
-
+    if (parse_add_csv(args, nombre_out, precio_out, stock_out) == 0) return 0;
+    if (parse_add_kv (args, nombre_out, precio_out, stock_out) == 0) return 0;
     return -1; /* no matcheó */
 }
 
@@ -226,7 +225,11 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     while (pbuf[i] && !isspace((unsigned char)pbuf[i]) && i < (int)sizeof(cmd) - 1) { cmd[i] = pbuf[i]; i++; }
     cmd[i] = 0; upper(cmd); pbuf += i; lskip(&pbuf);
 
-    /* snapshot de TX (quién es el dueño, etc.) */
+    /* snapshot de TX (quién es el dueño, etc.) — definidas en server.c */
+    extern pthread_mutex_t tx_mtx;
+    extern int tx_active;
+    extern int tx_owner;
+
     pthread_mutex_lock(&tx_mtx);
     local_tx_active = tx_active;
     local_tx_owner  = tx_owner;

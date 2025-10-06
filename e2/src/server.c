@@ -142,7 +142,7 @@ static void *iniciar_thread_cliente(void *arg) {
       linea[L-1] = '\0';
     }
 
-    /* Enfoque sin break/continue: cadena de if/else y flags */
+    /* Sin break/continue: if/else encadenado */
     if (!strncasecmp(linea, "QUIT", 4)) {
       dprintf(cfd, "BYE\n");
       quit = 1;
@@ -335,10 +335,10 @@ int main(int argc, char **argv) {
       if (g_stop) {
         running = 0;         /* señal recibida → salir del loop */
       } else if (errno == EINTR) {
-        /* nada: intentar nuevamente en la próxima iteración */
+        /* intentar nuevamente */
       } else {
         perror("accept");
-        /* mantener el servidor vivo a menos que se decida lo contrario */
+        /* mantener el servidor vivo */
       }
     }
   }
