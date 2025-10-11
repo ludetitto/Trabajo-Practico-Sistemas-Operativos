@@ -28,7 +28,7 @@ static void usage(const char *p)
 {
     fprintf(stderr,
             "Uso: %s -n <generadores> -t <total_registros> -o <salida.csv>\n"
-            "Ej:  %s -n 4 -t 10000 -o productos.csv\n",
+            "Ej:  %s -n 4 -t 100 -o ../productos.csv\n",
             p, p);
 }
 
@@ -131,10 +131,15 @@ int main(int argc, char **argv)
     }
 
     // Self-pipe para manejar señales en thread separado
+    // Si la llamada a pipe falla abortamos; de lo contrario imprimimos los
+    // descriptores creados. Usamos llaves para evitar confusiones de
+    // indentación y asegurar que solo la llamada a matar() está asociada al if.
     if (pipe(sigpipe_fd) == -1)
+    {
         matar("[PIPE] pipe() falló");
-        fprintf(stdout, "[MAIN] pipe creado: readfd=%d writefd=%d\n", sigpipe_fd[0], sigpipe_fd[1]);
-        fflush(stdout);
+    }
+    fprintf(stdout, "[MAIN] pipe creado: readfd=%d writefd=%d\n", sigpipe_fd[0], sigpipe_fd[1]);
+    fflush(stdout);
 
     // Escribe en el pipe de forma no bloqueante
     int flags = fcntl(sigpipe_fd[1], F_GETFL, 0);
@@ -175,19 +180,20 @@ int main(int argc, char **argv)
         pid_t pid = fork();
         if (pid < 0)
         {
+            // Error al crear un proceso hijo
             perror("fork");
             matar("No se pudo crear el generador %d", i);
         }
         if (pid == 0)
         {
-            generator_loop(i); // no vuelve
+            // Proceso hijo: ejecuta el loop del generador y no vuelve
+            generator_loop(i);
+            // Nunca se alcanza
         }
-            fprintf(stdout, "[MAIN] sig pipe: leidos %zd bytes\n", n);
         else
         {
+            // Proceso padre: guarda el PID y notifica
             g_pids[i] = pid;
-                fprintf(stdout, "[MAIN] sig pipe: byte[%zd] = '%c'\n", i, (c >= 32 && c < 127) ? c : '?');
-                fflush(stdout);
             fprintf(stdout, "[MAIN] generador idx=%d pid=%d listo.\n", i, (int)pid);
             fflush(stdout);
         }
