@@ -39,6 +39,23 @@ static void upper(char *s) {
     for (; *s; s++) *s = (char)toupper((unsigned char)*s);
 }
 
+/* trim espacios y comillas dobles alrededor */
+static void trim_and_unquote(char *s) {
+    if (!s) return;
+    /* trim leading */
+    char *p = s;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (p != s) memmove(s, p, strlen(p) + 1);
+    /* trim trailing */
+    size_t L = strlen(s);
+    while (L && isspace((unsigned char)s[L-1])) s[--L] = '\0';
+    /* sacar comillas dobles si hay */
+    if (L >= 2 && s[0] == '"' && s[L-1] == '"') {
+        memmove(s, s+1, L-2);
+        s[L-2] = '\0';
+    }
+}
+
 /* =========================
    parseo CSV: Nombre,precio,stock
    ========================= */
@@ -97,11 +114,24 @@ static int parse_add_kv(const char *args, char *nombre_out, float *precio_out, i
         }
         s++; /* '=' */
 
-        /* normalizar clave a minúsculas */
+        /* normalizar clave a minúsculas y recortar caracteres no alfanuméricos
+           Esto hace al parser más robust ante bytes extraños (p. ej. BOMs o
+           caracteres invisibles) entre la clave y el '=' */
         char kbuf[32];
         size_t klen = (size_t)(kend - kstart);
         if (klen >= sizeof(kbuf)) klen = sizeof(kbuf) - 1;
-        memcpy(kbuf, kstart, klen); kbuf[klen] = '\0';
+        memcpy(kbuf, kstart, klen);
+        kbuf[klen] = '\0';
+        /* trim no alfanuméricos del inicio y fin */
+        size_t kstart_off = 0, kend_off = klen;
+        while (kstart_off < kend_off && !isalnum((unsigned char)kbuf[kstart_off])) kstart_off++;
+        while (kend_off > kstart_off && !isalnum((unsigned char)kbuf[kend_off-1])) kend_off--;
+        if (kstart_off > 0 || kend_off < klen) {
+            size_t newlen = kend_off - kstart_off;
+            if (newlen >= sizeof(kbuf)) newlen = sizeof(kbuf) - 1;
+            memmove(kbuf, kbuf + kstart_off, newlen);
+            kbuf[newlen] = '\0';
+        }
         for (char *q = kbuf; *q; ++q) *q = (char)tolower((unsigned char)*q);
 
         /* saltar espacios previos al valor */
@@ -201,8 +231,19 @@ static int parse_add_kv(const char *args, char *nombre_out, float *precio_out, i
    parseo de ADD (CSV o k=v)
    ========================= */
 static int parse_add_any(const char *args, char *nombre_out, float *precio_out, int *stock_out) {
-    if (parse_add_csv(args, nombre_out, precio_out, stock_out) == 0) return 0;
-    if (parse_add_kv (args, nombre_out, precio_out, stock_out) == 0) return 0;
+    /* Debug: log incoming args to help diagnose intermittent parsing failures */
+    #if 1
+    fprintf(stderr, "[PROTO] parse_add_any: args='%s'\n", args ? args : "(null)");
+    #endif
+    if (parse_add_csv(args, nombre_out, precio_out, stock_out) == 0) {
+        fprintf(stderr, "[PROTO] parse_add_any: matched CSV\n");
+        return 0;
+    }
+    if (parse_add_kv (args, nombre_out, precio_out, stock_out) == 0) {
+        fprintf(stderr, "[PROTO] parse_add_any: matched KV\n");
+        return 0;
+    }
+    fprintf(stderr, "[PROTO] parse_add_any: no match -> ERR ARG\n");
     return -1; /* no matcheó */
 }
 
@@ -253,16 +294,24 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     if (!strcmp(cmd, "FIND")) {
         if (!strncasecmp(pbuf, "ALL", 3) && isspace((unsigned char)pbuf[3])) {
             pbuf += 3; while (*pbuf && isspace((unsigned char)*pbuf)) pbuf++;
-            if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
-            if (buscar_nombre_todos(pbuf, &vec, &n) != 0) { dprintf(cfd, "END\n"); return; }
+            /* sanitizar argumento */
+            char argbuf[1024]; safe_copy(argbuf, sizeof(argbuf), pbuf); trim_and_unquote(argbuf);
+            /* Requiere TX activa y ser dueño */
+            if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
+            if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+            if (buscar_nombre_todos(argbuf, &vec, &n) != 0) { dprintf(cfd, "END\n"); return; }
             for (size_t k = 0; k < n; ++k)
                 dprintf(cfd, "ROW %d,%s,%.2f,%u,%s\n", vec[k].id, vec[k].nombre, vec[k].precio, vec[k].stock, vec[k].timestamp);
             free(vec);
             dprintf(cfd, "END\n");
             return;
         }
-        if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
-        if (buscar_nombre_primero(pbuf, &r) == 0)
+        /* Requiere TX activa y ser dueño */
+        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
+        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+        /* sanitizar argumento */
+        char argbuf2[1024]; safe_copy(argbuf2, sizeof(argbuf2), pbuf); trim_and_unquote(argbuf2);
+        if (buscar_nombre_primero(argbuf2, &r) == 0)
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n", r.id, r.nombre, r.precio, r.stock, r.timestamp);
         else
             dprintf(cfd, "ERR NOT_FOUND\n");
@@ -323,7 +372,8 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
         if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
 
-        int id = atoi(pbuf);
+    char idbuf[64]; safe_copy(idbuf, sizeof(idbuf), pbuf); trim_and_unquote(idbuf);
+    int id = atoi(idbuf);
         if (id <= 0) { dprintf(cfd, "ERR ARG\n"); return; }
 
         if (!eliminar_arch(id)) dprintf(cfd, "OK\n");

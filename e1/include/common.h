@@ -67,6 +67,7 @@ typedef struct
     int turno;                // índice RR actual [0..nprods-1]
     pid_t pid[MAX_PRODS];     // PID de cada generador
     uint8_t alive[MAX_PRODS]; // 1 = vivo, 0 = muerto (lo marca el padre)
+    uint8_t muerte_temprana;  // 1 si hubo alguna muerte antes de agotar IDs
 } ids_t;
 
 static inline void matar(const char *fmt, ...)

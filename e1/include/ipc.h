@@ -67,6 +67,12 @@ extern "C"
 
     // Devuelve cuántos IDs faltan por asignar (lectura atómica bajo sem_ids).
     uint32_t ipc_restantes(void);
+    // devuelve la cantidad de generadores marcados como vivos
+    int ipc_prods_vivos(void);
+    // número total de generadores publicados por el padre (ipc_set_children)
+    int ipc_nprods(void);
+    // retorna 1 si algun generador murió antes de consumirse todos los IDs
+    int ipc_hubo_muerte_prematura(void);
 
 #ifdef __cplusplus
 }

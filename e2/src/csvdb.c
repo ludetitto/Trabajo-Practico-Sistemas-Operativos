@@ -59,10 +59,21 @@ static int buscar_cadena(const char *nombre_producto, const char *buscado)
 }
 
 static int parsear_linea(const char *linea, registro_t *r) {
-    // id,generador,pid,nombre,precio,stock,timestamp,borrado
-    return sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
+    // soporte para dos formatos: antiguo (6 cols):
+    //   id,generador,pid,nombre,precio,stock
+    // y nuevo (8 cols):
+    //   id,generador,pid,nombre,precio,stock,timestamp,borrado
+    int matched = sscanf(linea, "%d,%d,%d,%63[^,],%f,%u,%19[^,],%d",
                   &r->id, &r->generador, &r->pid, r->nombre,
-                  &r->precio, &r->stock, r->timestamp, (int*)&r->borrado) == 8 ? 0 : -1;
+                  &r->precio, &r->stock, r->timestamp, (int*)&r->borrado);
+    if (matched == 8) return 0;
+    if (matched == 6) {
+        /* rellenar campos faltantes */
+        r->timestamp[0] = '\0';
+        r->borrado = 0;
+        return 0;
+    }
+    return -1;
 }
 
 /* Header consistente (8 columnas) + filas */

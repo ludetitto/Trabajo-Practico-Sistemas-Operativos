@@ -11,6 +11,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include "../include/csvdb.h"
+#include <sys/stat.h>
+#include <fcntl.h>
 
 /* ==== PROTOS ==== */
 int procesar_linea_protocolo(int fd, const char *linea);
@@ -106,7 +108,7 @@ static int finalizar_tx_owner(int cfd)
 }
 
 /* Rollback + unlock si el cfd es el dueño (se usa en desconexión y ROLLBACK) */
-static void rollback_if_owner_and_unlock(int cfd)
+static void rollback_valido(int cfd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_active && tx_owner == cfd)
@@ -139,8 +141,10 @@ static void *iniciar_thread_cliente(void *arg)
   }
 
   dprintf(cfd,
-          "Conectado. Comandos: PING | GET <id> | FIND <nombre> | FIND ALL <nombre> | "
-          "ADD ... | UPDATE ... | DELETE <id> | BEGIN | COMMIT | ROLLBACK | QUIT\n");
+          "Conectado. Comandos: PING |\n"
+          "GET <id> | FIND <nombre> | FIND ALL <nombre> |\n"
+          "ADD ... | UPDATE ... | DELETE <id> |\n"
+          "BEGIN | COMMIT | ROLLBACK | QUIT\n");
 
   char linea[1024];
   int quit = 0;
@@ -199,7 +203,7 @@ static void *iniciar_thread_cliente(void *arg)
         else
         {
           /* si falla persistencia, revertimos */
-          rollback_if_owner_and_unlock(cfd);
+          rollback_valido(cfd);
           dprintf(cfd, "ERR COMMIT_FAILED\n");
         }
       }
@@ -218,7 +222,7 @@ static void *iniciar_thread_cliente(void *arg)
       if (es_duenio)
       {
         int rc = descartar_snapshot();
-        rollback_if_owner_and_unlock(cfd);
+        rollback_valido(cfd);
         if (rc == 0)
         {
           dprintf(cfd, "OK\n");
@@ -253,7 +257,7 @@ static void *iniciar_thread_cliente(void *arg)
   }
 
   /* Si salimos por EOF/desconexión y éramos dueños de TX → rollback + unlock */
-  rollback_if_owner_and_unlock(cfd);
+  rollback_valido(cfd);
 
   if (arch)
     fclose(arch);
@@ -322,6 +326,20 @@ int main(int argc, char **argv)
     fprintf(stderr, "Error: parámetros inválidos o faltantes.\n");
     print_usage(argv[0]);
     return 2;
+  }
+
+  /* Asegurar carpeta de logs y redirigir stdout/stderr a un logfile específico */
+  {
+    (void)mkdir("logs", 0755);
+    char logpath[512];
+    snprintf(logpath, sizeof(logpath), "logs/server_%d.log", port);
+    int lf = open(logpath, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if (lf >= 0) {
+      /* duplicar stdout/stderr al logfile */
+      (void)dup2(lf, STDOUT_FILENO);
+      (void)dup2(lf, STDERR_FILENO);
+      /* keep original fd open until exit */
+    }
   }
 
   /* Validar que el CSV existe/abre para lectura al menos */
@@ -425,7 +443,7 @@ int main(int argc, char **argv)
   }
 
   /* Si queda una TX activa (raro), hacer rollback y unlock */
-  rollback_if_owner_and_unlock(tx_owner);
+  rollback_valido(tx_owner);
 
   cerrar_arch();
   if (csv_fd >= 0)

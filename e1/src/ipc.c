@@ -141,11 +141,32 @@ void ipc_mark_dead(pid_t pid)
         if (ids_estado->pid[i] == pid)
         {
             ids_estado->alive[i] = 0;
+            // Si muere un hijo mientras aun quedan IDs por asignar,
+            // marcamos que hubo una muerte prematura para que el
+            // coordinador pueda decidir terminar (el total ya no se
+            // podrá alcanzar).
+            if (ids_estado->restantes > 0)
+                ids_estado->muerte_temprana = 1;
             break;
         }
     }
 
     sem_post(sem_ids);
+}
+
+int ipc_hubo_muerte_prematura(void)
+{
+    if (!ids_estado)
+        return 0;
+
+    while (sem_wait(sem_ids) == -1 && errno == EINTR)
+    {
+        // Acá no reintentamos indefinidamente en EINTR, para que
+        // el coordinador pueda reaccionar a señales.
+    }
+    int v = ids_estado->muerte_temprana ? 1 : 0;
+    sem_post(sem_ids);
+    return v;
 }
 
 uint32_t ipc_restantes(void)
@@ -156,6 +177,40 @@ uint32_t ipc_restantes(void)
     uint32_t r = ids_estado->restantes;
     sem_post(sem_ids);
     return r;
+}
+
+int ipc_prods_vivos(void)
+{
+    if (!ids_estado)
+        return 0;
+
+    while (sem_wait(sem_ids) == -1 && errno == EINTR)
+    {
+        // Acá no reintentamos indefinidamente en EINTR, para que
+        // el coordinador pueda reaccionar a señales.
+    }
+
+    int vivos = 0;
+    for (int i = 0; i < ids_estado->nprods; ++i)
+        vivos += ids_estado->alive[i];
+
+    sem_post(sem_ids);
+    return vivos;
+}
+
+int ipc_nprods(void) // devuelve la cantidad de generadores publicados por el padre
+{
+    if (!ids_estado)
+        return 0;
+
+    while (sem_wait(sem_ids) == -1 && errno == EINTR)
+    {
+        // Acá no reintentamos indefinidamente en EINTR, para que
+        // el coordinador pueda reaccionar a señales.
+    }
+    int n = ids_estado->nprods;
+    sem_post(sem_ids);
+    return n;
 }
 
 // ===== Ring buffer =====
@@ -217,6 +272,14 @@ int pop_timeout(registro_t *r, int timeout_ms)
     }
 
     // Espera con timeout por elementos
+    // Retornos:
+    //   0  -> éxito (se consumió un registro en la cola)
+    //   1  -> timeout (no llegó nada dentro de timeout_ms)
+    //  -1  -> error (incluye interrupción por señal/EINTR)
+    // Nota: anteriormente se reintentaba en EINTR; aquí, para permitir que
+    // las señales interrumpan la espera inmediatamente (y que el
+    // coordinador pueda reaccionar vía handler), no reintentamos sobre
+    // EINTR y consideramos -1 como error/interrupción.
     int rc;
     do
     {
@@ -225,7 +288,9 @@ int pop_timeout(registro_t *r, int timeout_ms)
 
     if (rc == -1)
     {
-        return (errno == ETIMEDOUT) ? 1 : -1;
+        if (errno == ETIMEDOUT)
+            return 1;
+        return -1;
     }
 
     // Toma exclusión y consume
