@@ -55,20 +55,51 @@ typedef struct
     uint32_t cant_elem_ocupados; // elementos ocupados
 } cola_t;
 
-/* ===== ids_t EXTENDIDO para RR estricto y tolerancia a fallos =====
+/* ===== ids_t EXTENDIDO: RR + tolerancia a fallos + “devoluciones” =====
    - única fuente de verdad para asignación de IDs
-   - metadatos para round-robin y estado de hijos
+   - metadatos de RR y estado de hijos
+   - seguimiento de bloque vigente por generador
+   - cola de rangos “devueltos” por muertes (para no dejar huecos)
 */
+
+// rango devuelto (IDs pendientes de algún bloque a medio terminar)
 typedef struct
 {
-    uint32_t proximo;         // siguiente ID a entregar (arranca en 1)
-    uint32_t restantes;       // IDs que faltan globalmente
-    int nprods;               // cantidad total de generadores
-    int turno;                // índice RR actual [0..nprods-1]
-    pid_t pid[MAX_PRODS];     // PID de cada generador
-    uint8_t alive[MAX_PRODS]; // 1 = vivo, 0 = muerto (lo marca el padre)
-    uint8_t muerte_temprana;  // 1 si hubo alguna muerte antes de agotar IDs
+    uint32_t base;
+    uint32_t cant;
+} rango_t;
+
+#ifndef DEVQ_CAP
+#define DEVQ_CAP 256 // capacidad de cola de devoluciones
+#endif
+
+typedef struct
+{
+    // Pool de IDs “nuevos”
+    uint32_t proximo;   // siguiente ID nuevo a asignar (arranca en 1)
+    uint32_t restantes; // cuántos IDs nuevos faltan globalmente
+    int nprods;         // cantidad total de generadores publicados
+    int turno;          // índice RR actual [0..nprods-1]
+
+    // Tabla de hijos
+    pid_t pid[MAX_PRODS];
+    int alive[MAX_PRODS]; // 1 = vivo, 0 = muerto
+
+    // Bloque vigente por generador
+    uint32_t bloq_base[MAX_PRODS];   // inicio del bloque
+    uint32_t bloq_cant[MAX_PRODS];   // tamaño del bloque (<=10)
+    uint32_t bloq_avance[MAX_PRODS]; // producidos dentro del bloque
+    int bloq_activo[MAX_PRODS];      // 1 si tiene bloque vigente
+
+    // Cola de “devoluciones” (rangos a reasignar primero)
+    rango_t devq[DEVQ_CAP];
+    int devq_head; // índice de pop
+    int devq_tail; // índice de push
+    int devq_len;  // cantidad de elementos en cola
 } ids_t;
+
+// Señalador de que ids_t ya está definido acá (para que ipc.h no lo redefina)
+#define IDS_T_DEFINED_IN_COMMON_H 1
 
 static inline void matar(const char *fmt, ...)
 {

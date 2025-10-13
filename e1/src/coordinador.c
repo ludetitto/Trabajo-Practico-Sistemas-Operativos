@@ -26,85 +26,66 @@ void coordinator_run(int total, const char *csvpath)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGHUP, &sa, NULL);
 
-    // Abre CSV (csv.c se encarga del encabezado si 'with_header'==1)
+    // Abre CSV (csv.c escribe encabezado si with_header==1)
     FILE *f = abrir_csv(csvpath, 1);
     if (!f)
         matar("[COORD] No pude abrir CSV: %s", csvpath);
 
-    const int SLICE_MS = 200; // espera breve para no bloquear y refrescar logs
-    uint32_t escrito = 0;     // cantidad de registros escritos
+    const int SLICE_MS = 200; // espera breve para refrescar y reaccionar a señales
+    uint32_t escrito = 0;
 
     fprintf(stdout, "[COORD] escribiendo en '%s' (total=%d)\n", csvpath, total);
     fflush(stdout);
 
-    // Bucle principal: consumir hasta completar 'total' o recibir señal
     while (!g_stop && escrito < (uint32_t)total)
     {
         registro_t r;
-        int rc = pop_timeout(&r, SLICE_MS); // intenta sacar del ring con timeout
+        int rc = pop_timeout(&r, SLICE_MS);
 
         if (rc == 0)
         {
-            // Registro disponible: persistir y loguear
+            // Registro disponible
             escribir_csv(f, &r);
             ++escrito;
             fprintf(stdout, "[COORD] CSV <- ID=%u (gen=%d, pid=%d) [%u/%d]\n",
                     r.id, r.generador, (int)r.pid, escrito, total);
             fflush(stdout);
+            continue;
         }
-        else if (rc == 1)
+
+        if (rc == 1)
         {
-            // Timeout (no llegó nada en el slice): preguntamos si quedan IDs
-            // por asignar (ipc_restantes). Si no quedan, pero todavía hay
-            // generadores vivos que podrían estar empujando sus registros
-            // pendientes, no finalizamos inmediatamente.
-            if (ipc_restantes() == 0)
+            // Timeout: evaluar estado del sistema
+            int vivos = ipc_prods_vivos();
+            uint32_t pendientes = ipc_pendientes_total(); // RESTANTES + DEVOLUCIONES
+
+            // 1) Si no queda ningún generador vivo, nadie más va a producir:
+            if (vivos == 0)
             {
-                int vivos = ipc_prods_vivos();
-                int nprods = ipc_nprods();
-                // Si quedaron generadores vivos pero hay menos vivos que los
-                // publicados originalmente, alguno murió: el total esperado
-                // ya no será alcanzable. En ese caso finalizamos.
-                if (vivos == 0)
-                {
-                    fprintf(stdout, "[COORD] no quedan generadores. finalizando (%u/%d).\n", escrito, total);
-                    fflush(stdout);
-                    g_stop = 1;
-                    break;
-                }
-                else if (vivos < nprods)
-                {
-                    // Si la diferencia se debe a muertes prematuras, cerramos
-                    // porque el total ya no será alcanzable. Si no (los hijos
-                    // terminaron normalmente), no cerramos aquí.
-                    if (ipc_hubo_muerte_prematura())
-                    {
-                        fprintf(stdout, "[COORD] detectados %d/%d generadores vivos; alguno murió. no se alcanzará el total. finalizando (%u/%d).\n",
-                                vivos, nprods, escrito, total);
-                        fflush(stdout);
-                        g_stop = 1;
-                        break;
-                    }
-                    else
-                    {
-                        fprintf(stdout, "[COORD] detectados %d/%d generadores vivos; esperando finalización normal...\n",
-                                vivos, nprods);
-                        fflush(stdout);
-                    }
-                }
-                else
-                {
-                    fprintf(stdout, "[COORD] no quedan IDs por asignar, pero quedan %d generadores vivos. esperando...\n", vivos);
-                    fflush(stdout);
-                }
+                fprintf(stdout, "[COORD] sin generadores vivos; quedan %u IDs pendientes. finalizando (%u/%d).\n",
+                        pendientes, escrito, total);
+                fflush(stdout);
+                g_stop = 1;
+                break;
             }
+
+            // 2) Si no quedan pendientes (ni nuevos ni devueltos), terminamos:
+            if (pendientes == 0)
+            {
+                fprintf(stdout, "[COORD] no quedan IDs pendientes. finalizando (%u/%d).\n",
+                        escrito, total);
+                fflush(stdout);
+                g_stop = 1;
+                break;
+            }
+
+            // 3) Caso intermedio: hay vivos y hay trabajo → seguimos esperando.
+            continue;
         }
-        else
-        {
-            // Error en semáforo o reloj
-            perror("[COORD] pop_timeout");
-            break;
-        }
+
+        // rc == -1 → error real (señal/interrupción o fallo de reloj/semaforo)
+        perror("[COORD] pop_timeout");
+        break;
     }
 
     fprintf(stdout, "[COORD] finalizado (%u/%d). CSV listo.\n", escrito, total);
@@ -112,7 +93,8 @@ void coordinator_run(int total, const char *csvpath)
 
     // Cierre del CSV (flush y close)
     cerrar_csv(f);
-    // Aseguramos liberar/destruir IPCs si el coordinador termina
+
+    // Limpieza explícita de IPCs al terminar el coordinador
     fprintf(stdout, "[COORD] limpiando IPCs y saliendo.\n");
     fflush(stdout);
     ipc_cerrar_todos(1);

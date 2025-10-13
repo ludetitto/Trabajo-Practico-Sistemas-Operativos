@@ -11,7 +11,6 @@ static void on_term(int s)
     g_stop = 1;
 }
 
-// reemplaza la versión con usleep -> nanosleep portable
 static inline void sleep_ms(int ms)
 {
     if (ms <= 0)
@@ -19,7 +18,6 @@ static inline void sleep_ms(int ms)
     struct timespec ts;
     ts.tv_sec = ms / 1000;
     ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-    // reintentar si se interrumpe por señal
     while (nanosleep(&ts, &ts) == -1 && errno == EINTR)
     {
     }
@@ -28,9 +26,11 @@ static inline void sleep_ms(int ms)
 void generator_loop(int idx_generador)
 {
 #ifdef PR_SET_PDEATHSIG
-    // Si muere el padre, este proceso recibe SIGTERM automáticamente
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 #endif
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
 
     struct sigaction sa = {0};
     sa.sa_handler = on_term;
@@ -44,9 +44,7 @@ void generator_loop(int idx_generador)
         matar("[GEN %d] ipc_abrir_todos(abrir) falló.", idx_generador);
     }
 
-    // Semilla simple para el delay aleatorio por proceso
     srand((unsigned)(getpid() ^ (unsigned)time(NULL)));
-
     fprintf(stdout, "[GEN %d][pid=%d] iniciado.\n", idx_generador, (int)getpid());
     fflush(stdout);
 
@@ -73,27 +71,33 @@ void generator_loop(int idx_generador)
             generar_randrec(&r, base + i, idx_generador);
             r.pid = getpid();
 
-            // Delay aleatorio 100–1000 ms antes de empujar
             int d_ms = 100 + (rand() % 901);
             fprintf(stdout, "[GEN %d][pid=%d] ID=%u → push (delay=%d ms)\n",
                     idx_generador, (int)r.pid, r.id, d_ms);
             fflush(stdout);
             sleep_ms(d_ms);
 
-            // Empuje interruptible: evita quedarse colgado si el padre muere
+            int pushed = 0;
             for (;;)
             {
                 if (g_stop)
                     break;
-                int prc = push_interruptible(&r, 200); // 200 ms por intento
+                int prc = push_interruptible(&r, 200);
                 if (prc == 0)
-                    break; // empujó ok
+                {
+                    pushed = 1;
+                    break;
+                }
                 if (prc == 1)
-                    continue; // timeout: reintentar, chequeando g_stop
-                // prc == -1 -> error real: log y salida ordenada
+                    continue; // timeout
                 perror("[GEN] push_interruptible");
                 g_stop = 1;
                 break;
+            }
+            if (pushed)
+            {
+                // === IMPORTANTE: avisar que produjimos 1 ID del bloque vigente ===
+                ipc_avance_bloque(idx_generador);
             }
         }
     }

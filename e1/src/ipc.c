@@ -10,8 +10,6 @@ sem_t *sem_full = NULL;
 sem_t *sem_mutex = NULL;
 sem_t *sem_ids = NULL;
 
-// Crea/abre un objeto SHM con tamaño 'tam'.
-//   crear=1 => O_CREAT|O_RDWR + ftruncate; crear=0 => O_RDWR.
 static int crear_shm(const char *nombre, size_t tam, int crear)
 {
     int oflag = crear ? (O_CREAT | O_RDWR) : O_RDWR;
@@ -26,10 +24,38 @@ static int crear_shm(const char *nombre, size_t tam, int crear)
     return fd;
 }
 
-// Abre/crea todos los IPCs (cola + ids + semáforos)
+// ===== Helpers internos (devq) — bajo sem_ids =====
+static inline int devq_pop(uint32_t *base, uint32_t *cant)
+{
+    if (ids_estado->devq_len == 0)
+        return 0;
+    rango_t r = ids_estado->devq[ids_estado->devq_head];
+    ids_estado->devq_head = (ids_estado->devq_head + 1) % DEVQ_CAP;
+    ids_estado->devq_len--;
+    *base = r.base;
+    *cant = r.cant;
+    return 1;
+}
+
+static inline void devq_push(uint32_t base, uint32_t cant)
+{
+    if (cant == 0)
+        return;
+    if (ids_estado->devq_len >= DEVQ_CAP)
+    {
+        // muy raro; reinyectamos al pool nuevo
+        ids_estado->restantes += cant;
+        return;
+    }
+    ids_estado->devq[ids_estado->devq_tail].base = base;
+    ids_estado->devq[ids_estado->devq_tail].cant = cant;
+    ids_estado->devq_tail = (ids_estado->devq_tail + 1) % DEVQ_CAP;
+    ids_estado->devq_len++;
+}
+
+// ===== abrir/cerrar IPCs =====
 int ipc_abrir_todos(int crear, uint32_t total_ids)
 {
-    // SHM cola (ring buffer)
     int fd = crear_shm(SHM_RING_NAME, sizeof(cola_t), crear);
     if (fd < 0)
         return -1;
@@ -40,7 +66,6 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
     if (crear)
         memset(cola, 0, sizeof(*cola));
 
-    // SHM ids (estado de IDs + metadatos RR)
     fd = crear_shm(SHM_IDS_NAME, sizeof(ids_t), crear);
     if (fd < 0)
         return -1;
@@ -48,17 +73,17 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
     close(fd);
     if (ids_estado == MAP_FAILED)
         return -1;
+
     if (crear)
     {
         memset(ids_estado, 0, sizeof(*ids_estado));
         ids_estado->proximo = 1;
         ids_estado->restantes = total_ids;
-        ids_estado->nprods = 0; // lo setea el padre con ipc_set_children()
+        ids_estado->nprods = 0;
         ids_estado->turno = 0;
-        // NOTA: no usamos campo muerte_temprana; se calcula al vuelo.
+        ids_estado->devq_head = ids_estado->devq_tail = ids_estado->devq_len = 0;
     }
 
-    // Semáforos POSIX (unlink previos si creamos)
     if (crear)
     {
         sem_unlink(SEM_EMPTY_NAME);
@@ -76,7 +101,6 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
     return 0;
 }
 
-// Cierra y opcionalmente destruye todos los IPCs
 void ipc_cerrar_todos(int borrar_ahora)
 {
     if (cola)
@@ -104,15 +128,13 @@ void ipc_cerrar_todos(int borrar_ahora)
     }
 }
 
-// ===== Helpers de RR y estado de hijos =====
-
+// ===== RR / estado hijos =====
 void ipc_set_children(int nprods, const pid_t *pids)
 {
     if (!ids_estado)
         return;
-
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
 
     if (nprods > MAX_PRODS)
@@ -122,6 +144,10 @@ void ipc_set_children(int nprods, const pid_t *pids)
     {
         ids_estado->pid[i] = pids[i];
         ids_estado->alive[i] = 1;
+        ids_estado->bloq_activo[i] = 0;
+        ids_estado->bloq_avance[i] = 0;
+        ids_estado->bloq_cant[i] = 0;
+        ids_estado->bloq_base[i] = 0;
     }
     ids_estado->turno = 0;
 
@@ -132,9 +158,8 @@ void ipc_mark_dead(pid_t pid)
 {
     if (!ids_estado)
         return;
-
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
 
     for (int i = 0; i < ids_estado->nprods; ++i)
@@ -142,7 +167,19 @@ void ipc_mark_dead(pid_t pid)
         if (ids_estado->pid[i] == pid)
         {
             ids_estado->alive[i] = 0;
-            // NO escribimos ids_estado->muerte_temprana: no existe ese campo.
+
+            if (ids_estado->bloq_activo[i])
+            {
+                uint32_t av = ids_estado->bloq_avance[i];
+                uint32_t cnt = ids_estado->bloq_cant[i];
+                if (av < cnt)
+                {
+                    uint32_t base_devol = ids_estado->bloq_base[i] + av;
+                    uint32_t cant_devol = cnt - av;
+                    devq_push(base_devol, cant_devol);
+                }
+                ids_estado->bloq_activo[i] = 0;
+            }
             break;
         }
     }
@@ -150,25 +187,26 @@ void ipc_mark_dead(pid_t pid)
     sem_post(sem_ids);
 }
 
-// Calcula al vuelo si hubo muerte prematura:
-//   true si quedan IDs por asignar y la cantidad de vivos < nprods inicial.
 int ipc_hubo_muerte_prematura(void)
 {
     if (!ids_estado)
         return 0;
-
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* no bucle infinito */
+    {
     }
 
+    // aproximación: si queda trabajo y hay menos vivos que nprods
     uint32_t rest = ids_estado->restantes;
-    int n = ids_estado->nprods;
-    int vivos = 0;
+    for (int i = 0, k = ids_estado->devq_len, p = ids_estado->devq_head; i < k; ++i)
+    {
+        rest += ids_estado->devq[p].cant;
+        p = (p + 1) % DEVQ_CAP;
+    }
+    int n = ids_estado->nprods, vivos = 0;
     for (int i = 0; i < n; ++i)
         vivos += ids_estado->alive[i];
 
     int v = (rest > 0 && vivos < n) ? 1 : 0;
-
     sem_post(sem_ids);
     return v;
 }
@@ -176,20 +214,35 @@ int ipc_hubo_muerte_prematura(void)
 uint32_t ipc_restantes(void)
 {
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
     uint32_t r = ids_estado->restantes;
     sem_post(sem_ids);
     return r;
 }
 
+// NUEVO: suma “restantes” + todo lo que haya en la cola de devoluciones.
+uint32_t ipc_pendientes_total(void)
+{
+    while (sem_wait(sem_ids) == -1 && errno == EINTR)
+    {
+    }
+    uint32_t total = ids_estado->restantes;
+    for (int i = 0, k = ids_estado->devq_len, p = ids_estado->devq_head; i < k; ++i)
+    {
+        total += ids_estado->devq[p].cant;
+        p = (p + 1) % DEVQ_CAP;
+    }
+    sem_post(sem_ids);
+    return total;
+}
+
 int ipc_prods_vivos(void)
 {
     if (!ids_estado)
         return 0;
-
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* no bucle infinito */
+    {
     }
 
     int vivos = 0;
@@ -200,57 +253,73 @@ int ipc_prods_vivos(void)
     return vivos;
 }
 
-int ipc_nprods(void) // devuelve la cantidad de generadores publicados por el padre
+int ipc_nprods(void)
 {
     if (!ids_estado)
         return 0;
-
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    { /* no bucle infinito */
+    {
     }
     int n = ids_estado->nprods;
     sem_post(sem_ids);
     return n;
 }
 
-// ===== Ring buffer =====
+void ipc_avance_bloque(int idx)
+{
+    if (!ids_estado)
+        return;
+    while (sem_wait(sem_ids) == -1 && errno == EINTR)
+    {
+    }
+
+    if (idx >= 0 && idx < ids_estado->nprods && ids_estado->bloq_activo[idx])
+    {
+        if (ids_estado->bloq_avance[idx] < ids_estado->bloq_cant[idx])
+        {
+            ids_estado->bloq_avance[idx]++;
+            if (ids_estado->bloq_avance[idx] >= ids_estado->bloq_cant[idx])
+            {
+                ids_estado->bloq_activo[idx] = 0;
+            }
+        }
+    }
+
+    sem_post(sem_ids);
+}
+
+// ===== Ring buffer (cola de registros) =====
 
 void push(const registro_t *r)
 {
-    // Espera espacio libre y exclusión
     while (sem_wait(sem_empty) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
     while (sem_wait(sem_mutex) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
 
-    // Escribe en la cola
     cola->buffer[cola->ultimo] = *r;
     cola->ultimo = (cola->ultimo + 1) % COLA_CAP;
     cola->cant_elem_ocupados++;
 
-    // Libera exclusión y notifica que hay datos
     sem_post(sem_mutex);
     sem_post(sem_full);
 }
 
 int pop(registro_t *r)
 {
-    // Espera datos y exclusión
     while (sem_wait(sem_full) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
     while (sem_wait(sem_mutex) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
 
-    // Lee desde la cola
     *r = cola->buffer[cola->primero];
     cola->primero = (cola->primero + 1) % COLA_CAP;
     cola->cant_elem_ocupados--;
 
-    // Libera exclusión y notifica espacio libre
     sem_post(sem_mutex);
     sem_post(sem_empty);
     return 0;
@@ -258,7 +327,6 @@ int pop(registro_t *r)
 
 int pop_timeout(registro_t *r, int timeout_ms)
 {
-    // Calcula deadline absoluto (CLOCK_REALTIME)
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
         return -1;
@@ -284,9 +352,8 @@ int pop_timeout(registro_t *r, int timeout_ms)
         return -1;
     }
 
-    // Toma exclusión y consume
     while (sem_wait(sem_mutex) == -1 && errno == EINTR)
-    { /* retry */
+    {
     }
 
     *r = cola->buffer[cola->primero];
@@ -302,7 +369,6 @@ int pop_timeout(registro_t *r, int timeout_ms)
 // return: 0=ok, 1=timeout al esperar, -1=error
 int push_interruptible(const registro_t *r, int timeout_ms)
 {
-    // deadline 1: para esperar espacio (sem_empty)
     struct timespec ts1;
     if (clock_gettime(CLOCK_REALTIME, &ts1) < 0)
         return -1;
@@ -326,11 +392,9 @@ int push_interruptible(const registro_t *r, int timeout_ms)
         return -1;
     }
 
-    // deadline 2: para tomar el mutex (por si hay contención)
     struct timespec ts2;
     if (clock_gettime(CLOCK_REALTIME, &ts2) < 0)
     {
-        // devolver el permiso que quitamos a sem_empty
         sem_post(sem_empty);
         return -1;
     }
@@ -348,14 +412,12 @@ int push_interruptible(const registro_t *r, int timeout_ms)
     } while (rc == -1 && errno == EINTR);
     if (rc == -1)
     {
-        // no pudimos tomar mutex: devolvemos el slot de empty
         sem_post(sem_empty);
         if (errno == ETIMEDOUT)
             return 1;
         return -1;
     }
 
-    // sección crítica: escribir
     cola->buffer[cola->ultimo] = *r;
     cola->ultimo = (cola->ultimo + 1) % COLA_CAP;
     cola->cant_elem_ocupados++;
@@ -365,19 +427,43 @@ int push_interruptible(const registro_t *r, int timeout_ms)
     return 0;
 }
 
-// ===== IDs: Round-Robin estricto (salta hijos muertos) =====
+// ===== IDs: RR con “devoluciones” =====
 // idx = índice lógico del generador [0..nprods-1]
 // return: 0=asignó; 1=no quedan IDs
 int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
 {
     for (;;)
     {
-        // Toma lock del estado de IDs
         while (sem_wait(sem_ids) == -1 && errno == EINTR)
-        { /* retry */
+        {
         }
 
-        // ¿No quedan IDs?
+        // ¿Hay un rango devuelto pendiente? -> Prioridad 1
+        uint32_t b, c;
+        if (ids_estado->devq_len > 0)
+        {
+            devq_pop(&b, &c);
+            uint32_t give = (c > 10) ? 10 : c;
+            *base = b;
+            *cant = give;
+
+            // Si sobró, reinsertamos el resto al frente (simplemente push otra vez)
+            if (c > give)
+            {
+                devq_push(b + give, c - give);
+            }
+
+            // Registrar bloque activo del generador
+            ids_estado->bloq_base[idx] = *base;
+            ids_estado->bloq_cant[idx] = *cant;
+            ids_estado->bloq_avance[idx] = 0;
+            ids_estado->bloq_activo[idx] = 1;
+
+            sem_post(sem_ids);
+            return 0;
+        }
+
+        // ¿No quedan IDs “nuevos”?
         if (ids_estado->restantes == 0)
         {
             sem_post(sem_ids);
@@ -385,7 +471,7 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             return 1;
         }
 
-        // Avanza turno si señala a un hijo muerto
+        // Avanza turno si el apuntado está muerto
         int giros = 0;
         while (ids_estado->nprods > 0 &&
                ids_estado->alive[ids_estado->turno] == 0 &&
@@ -400,6 +486,7 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             ids_estado->turno == idx &&
             ids_estado->alive[idx])
         {
+
             uint32_t give = (ids_estado->restantes > 10) ? 10 : ids_estado->restantes;
             *base = ids_estado->proximo;
             *cant = give;
@@ -407,7 +494,7 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             ids_estado->proximo += give;
             ids_estado->restantes -= give;
 
-            // Turno al siguiente vivo (si quedan IDs)
+            // Siguiente turno (saltando muertos)
             if (ids_estado->nprods > 0)
             {
                 do
@@ -416,6 +503,12 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
                 } while (ids_estado->alive[ids_estado->turno] == 0 &&
                          ids_estado->restantes > 0);
             }
+
+            // Registrar bloque activo para este generador
+            ids_estado->bloq_base[idx] = *base;
+            ids_estado->bloq_cant[idx] = *cant;
+            ids_estado->bloq_avance[idx] = 0;
+            ids_estado->bloq_activo[idx] = 1;
 
             sem_post(sem_ids);
             return 0;
