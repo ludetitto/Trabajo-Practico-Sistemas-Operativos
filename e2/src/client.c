@@ -208,7 +208,6 @@ int main(int argc, char **argv)
         {
             /* server murió o cerró */
             fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
-            /* No podemos hacer rollback en el server (ya murió); igualmente el server al morir hizo rollback+unlock. */
             close(sockfd);
             return 1;
         }
@@ -221,7 +220,6 @@ int main(int argc, char **argv)
                 close(sockfd);
                 return 1;
             }
-            /* seguimos el loop */
             continue;
         }
 
@@ -253,30 +251,7 @@ int main(int argc, char **argv)
                 close(sockfd);
                 return 1;
             }
-
-            /* Intentar leer/imprimir respuesta principal tras cada comando */
-            if (leer_imprimir_respuesta(sockfd) < 0)
-            {
-                fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
-                close(sockfd);
-                return 1;
-            }
-
-            /* Estado local de TX */
-            if (!strncasecmp(linea, "BEGIN", 5))
-            {
-                client_tx_active = 1;
-            }
-            else if (!strncasecmp(linea, "COMMIT", 6) ||
-                     !strncasecmp(linea, "ROLLBACK", 8) ||
-                     !strncasecmp(linea, "QUIT", 4))
-            {
-                client_tx_active = 0;
-                if (!strncasecmp(linea, "QUIT", 4))
-                {
-                    running = 0; /* listo, cerramos abajo */
-                }
-            }
+            /* No mostrar prompt aquí, solo tras respuesta del server */
         }
     }
 

@@ -125,8 +125,7 @@ test7: $(BIN) | $(LOG_DIR)
 # Ejecución rápida pasando parámetros arbitrarios
 # Uso: make run ARGS="-n 3 -t 90 -o productos.csv"
 run: all
-	@echo "==> $(BIN) $(ARGS)"
-	$(BIN) $(ARGS)
+	$(BIN) -n 4 -t 100 -o ../db.csv
 
 # Demo con valores por defecto
 demo: all

@@ -296,9 +296,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             pbuf += 3; while (*pbuf && isspace((unsigned char)*pbuf)) pbuf++;
             /* sanitizar argumento */
             char argbuf[1024]; safe_copy(argbuf, sizeof(argbuf), pbuf); trim_and_unquote(argbuf);
-            /* Requiere TX activa y ser dueño */
-            if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-            if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+            // Eliminar chequeo de transacción para FIND ALL
             if (buscar_nombre_todos(argbuf, &vec, &n) != 0) { dprintf(cfd, "END\n"); return; }
             for (size_t k = 0; k < n; ++k)
                 dprintf(cfd, "ROW %d,%s,%.2f,%u,%s\n", vec[k].id, vec[k].nombre, vec[k].precio, vec[k].stock, vec[k].timestamp);
@@ -306,10 +304,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             dprintf(cfd, "END\n");
             return;
         }
-        /* Requiere TX activa y ser dueño */
-        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
-        /* sanitizar argumento */
+        // Eliminar chequeo de transacción para FIND
         char argbuf2[1024]; safe_copy(argbuf2, sizeof(argbuf2), pbuf); trim_and_unquote(argbuf2);
         if (buscar_nombre_primero(argbuf2, &r) == 0)
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n", r.id, r.nombre, r.precio, r.stock, r.timestamp);

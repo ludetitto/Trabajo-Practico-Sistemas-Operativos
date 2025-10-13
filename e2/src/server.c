@@ -60,8 +60,8 @@ static int intentar_iniciar_tx(int cfd)
       .l_start = 0,
       .l_len = 0};
 
-  if (fcntl(csv_fd, F_SETLK, &lk) < 0)
-  {
+  if (fcntl(csv_fd, F_SETLK, &lk) < 0) // el fnctl sobre el archivo hace el lock
+  {                                    // devuelve -1 si no pudo tomar el lock
     pthread_mutex_unlock(&tx_mtx);
     return -1;
   }
@@ -140,17 +140,30 @@ static void *iniciar_thread_cliente(void *arg)
     return NULL;
   }
 
-  dprintf(cfd,
-          "Conectado. Comandos: PING |\n"
-          "GET <id> | FIND <nombre> | FIND ALL <nombre> |\n"
-          "ADD ... | UPDATE ... | DELETE <id> |\n"
-          "BEGIN | COMMIT | ROLLBACK | QUIT\n");
+dprintf(cfd,
+    "╔══════════════════════════════════════════╗\n"
+    "║     Comandos disponibles                 ║\n"
+    "╠══════════════════════════════════════════╣\n"
+    "║  PING                                    ║\n"
+    "║  GET <id>                                ║\n"
+    "║  FIND <nombre>                           ║\n"
+    "║  FIND ALL <nombre>                       ║\n"
+    "║  ADD nombre=... precio=... stock=...     ║\n"
+    "║  UPDATE nombre=... precio=... stock=...  ║\n"
+    "║  DELETE <id>                             ║\n"
+    "║  BEGIN                                   ║\n"
+    "║  COMMIT                                  ║\n"
+    "║  ROLLBACK                                ║\n"
+    "║  QUIT                                    ║\n"
+    "╚══════════════════════════════════════════╝\n"
+);
 
   char linea[1024];
   int quit = 0;
 
   while (!quit && fgets(linea, sizeof(linea), arch))
   {
+    printf("> "); fflush(stdout);
     /* Normalizar fin de línea */
     size_t L = strlen(linea);
     if (L && (linea[L - 1] == '\n' || linea[L - 1] == '\r'))
@@ -212,6 +225,26 @@ static void *iniciar_thread_cliente(void *arg)
         dprintf(cfd, "ERR NOT_OWNER_OR_NO_TX\n");
       }
     }
+    else if (!strncasecmp(linea, "HELP", 4))
+    {
+      dprintf(cfd,
+        "╔════════════════════════════════════════════════════╗\n"
+        "║                Comandos disponibles:               ║\n"
+        "╠════════════════════════════════════════════════════╣\n"
+        "║  PING                        - Test de conexión    ║\n"
+        "║  GET <id>                    - Buscar por ID       ║\n"
+        "║  FIND <nombre>               - Buscar por nombre   ║\n"
+        "║  FIND ALL <nombre>           - Buscar todos        ║\n"
+        "║  ADD nombre=... precio=...   - Agregar registro    ║\n"
+        "║  UPDATE ...                  - Modificar registro  ║\n"
+        "║  DELETE <id>                 - Eliminar registro   ║\n"
+        "║  BEGIN                       - Iniciar transacción ║\n"
+        "║  COMMIT                      - Confirmar cambios   ║\n"
+        "║  ROLLBACK                    - Deshacer cambios    ║\n"
+        "║  QUIT                        - Salir               ║\n"
+        "╚════════════════════════════════════════════════════╝\n"
+      );
+    }
     else if (!strncasecmp(linea, "ROLLBACK", 8))
     {
       int es_duenio;
@@ -239,10 +272,12 @@ static void *iniciar_thread_cliente(void *arg)
     }
     else
     {
-      /* Si hay transacción activa y NO soy el dueño => denegar */
+      int es_find = !strncasecmp(linea, "FIND", 4);
+      int es_get = !strncasecmp(linea, "GET", 3);
+      /* Si hay transacción activa y NO soy el dueño => denegar salvo FIND/FIND ALL/GET */
       int denegar;
       pthread_mutex_lock(&tx_mtx);
-      denegar = (tx_active && tx_owner != cfd);
+      denegar = (tx_active && tx_owner != cfd && !es_find && !es_get);
       pthread_mutex_unlock(&tx_mtx);
 
       if (!denegar)
