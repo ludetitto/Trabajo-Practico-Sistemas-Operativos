@@ -55,6 +55,7 @@ int ipc_abrir_todos(int crear, uint32_t total_ids)
         ids_estado->restantes = total_ids;
         ids_estado->nprods = 0; // lo setea el padre con ipc_set_children()
         ids_estado->turno = 0;
+        // NOTA: no usamos campo muerte_temprana; se calcula al vuelo.
     }
 
     // Semáforos POSIX (unlink previos si creamos)
@@ -141,12 +142,7 @@ void ipc_mark_dead(pid_t pid)
         if (ids_estado->pid[i] == pid)
         {
             ids_estado->alive[i] = 0;
-            // Si muere un hijo mientras aun quedan IDs por asignar,
-            // marcamos que hubo una muerte prematura para que el
-            // coordinador pueda decidir terminar (el total ya no se
-            // podrá alcanzar).
-            if (ids_estado->restantes > 0)
-                ids_estado->muerte_temprana = 1;
+            // NO escribimos ids_estado->muerte_temprana: no existe ese campo.
             break;
         }
     }
@@ -154,17 +150,25 @@ void ipc_mark_dead(pid_t pid)
     sem_post(sem_ids);
 }
 
+// Calcula al vuelo si hubo muerte prematura:
+//   true si quedan IDs por asignar y la cantidad de vivos < nprods inicial.
 int ipc_hubo_muerte_prematura(void)
 {
     if (!ids_estado)
         return 0;
 
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
-        // Acá no reintentamos indefinidamente en EINTR, para que
-        // el coordinador pueda reaccionar a señales.
+    { /* no bucle infinito */
     }
-    int v = ids_estado->muerte_temprana ? 1 : 0;
+
+    uint32_t rest = ids_estado->restantes;
+    int n = ids_estado->nprods;
+    int vivos = 0;
+    for (int i = 0; i < n; ++i)
+        vivos += ids_estado->alive[i];
+
+    int v = (rest > 0 && vivos < n) ? 1 : 0;
+
     sem_post(sem_ids);
     return v;
 }
@@ -185,9 +189,7 @@ int ipc_prods_vivos(void)
         return 0;
 
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
-        // Acá no reintentamos indefinidamente en EINTR, para que
-        // el coordinador pueda reaccionar a señales.
+    { /* no bucle infinito */
     }
 
     int vivos = 0;
@@ -204,9 +206,7 @@ int ipc_nprods(void) // devuelve la cantidad de generadores publicados por el pa
         return 0;
 
     while (sem_wait(sem_ids) == -1 && errno == EINTR)
-    {
-        // Acá no reintentamos indefinidamente en EINTR, para que
-        // el coordinador pueda reaccionar a señales.
+    { /* no bucle infinito */
     }
     int n = ids_estado->nprods;
     sem_post(sem_ids);
@@ -271,15 +271,6 @@ int pop_timeout(registro_t *r, int timeout_ms)
         ts.tv_nsec -= 1000000000L;
     }
 
-    // Espera con timeout por elementos
-    // Retornos:
-    //   0  -> éxito (se consumió un registro en la cola)
-    //   1  -> timeout (no llegó nada dentro de timeout_ms)
-    //  -1  -> error (incluye interrupción por señal/EINTR)
-    // Nota: anteriormente se reintentaba en EINTR; aquí, para permitir que
-    // las señales interrumpan la espera inmediatamente (y que el
-    // coordinador pueda reaccionar vía handler), no reintentamos sobre
-    // EINTR y consideramos -1 como error/interrupción.
     int rc;
     do
     {
@@ -304,6 +295,73 @@ int pop_timeout(registro_t *r, int timeout_ms)
 
     sem_post(sem_mutex);
     sem_post(sem_empty);
+    return 0;
+}
+
+// === Push interruptible (sale por timeout o señal) ===
+// return: 0=ok, 1=timeout al esperar, -1=error
+int push_interruptible(const registro_t *r, int timeout_ms)
+{
+    // deadline 1: para esperar espacio (sem_empty)
+    struct timespec ts1;
+    if (clock_gettime(CLOCK_REALTIME, &ts1) < 0)
+        return -1;
+    ts1.tv_sec += timeout_ms / 1000;
+    ts1.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (ts1.tv_nsec >= 1000000000L)
+    {
+        ts1.tv_sec++;
+        ts1.tv_nsec -= 1000000000L;
+    }
+
+    int rc;
+    do
+    {
+        rc = sem_timedwait(sem_empty, &ts1);
+    } while (rc == -1 && errno == EINTR);
+    if (rc == -1)
+    {
+        if (errno == ETIMEDOUT)
+            return 1;
+        return -1;
+    }
+
+    // deadline 2: para tomar el mutex (por si hay contención)
+    struct timespec ts2;
+    if (clock_gettime(CLOCK_REALTIME, &ts2) < 0)
+    {
+        // devolver el permiso que quitamos a sem_empty
+        sem_post(sem_empty);
+        return -1;
+    }
+    ts2.tv_sec += timeout_ms / 1000;
+    ts2.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (ts2.tv_nsec >= 1000000000L)
+    {
+        ts2.tv_sec++;
+        ts2.tv_nsec -= 1000000000L;
+    }
+
+    do
+    {
+        rc = sem_timedwait(sem_mutex, &ts2);
+    } while (rc == -1 && errno == EINTR);
+    if (rc == -1)
+    {
+        // no pudimos tomar mutex: devolvemos el slot de empty
+        sem_post(sem_empty);
+        if (errno == ETIMEDOUT)
+            return 1;
+        return -1;
+    }
+
+    // sección crítica: escribir
+    cola->buffer[cola->ultimo] = *r;
+    cola->ultimo = (cola->ultimo + 1) % COLA_CAP;
+    cola->cant_elem_ocupados++;
+
+    sem_post(sem_mutex);
+    sem_post(sem_full);
     return 0;
 }
 
@@ -342,7 +400,6 @@ int pedir_bloque_ids_rr(int idx, uint32_t *base, uint32_t *cant)
             ids_estado->turno == idx &&
             ids_estado->alive[idx])
         {
-
             uint32_t give = (ids_estado->restantes > 10) ? 10 : ids_estado->restantes;
             *base = ids_estado->proximo;
             *cant = give;

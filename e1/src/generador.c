@@ -80,7 +80,21 @@ void generator_loop(int idx_generador)
             fflush(stdout);
             sleep_ms(d_ms);
 
-            push(&r); // bloquea si el ring está lleno
+            // Empuje interruptible: evita quedarse colgado si el padre muere
+            for (;;)
+            {
+                if (g_stop)
+                    break;
+                int prc = push_interruptible(&r, 200); // 200 ms por intento
+                if (prc == 0)
+                    break; // empujó ok
+                if (prc == 1)
+                    continue; // timeout: reintentar, chequeando g_stop
+                // prc == -1 -> error real: log y salida ordenada
+                perror("[GEN] push_interruptible");
+                g_stop = 1;
+                break;
+            }
         }
     }
 

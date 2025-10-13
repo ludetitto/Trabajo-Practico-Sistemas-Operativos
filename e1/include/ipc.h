@@ -51,6 +51,8 @@ extern "C"
     //   return: 0=ok, 1=timeout, -1=error.
     int pop_timeout(registro_t *r, int timeout_ms);
 
+    int push_interruptible(const registro_t *r, int timeout_ms);
+
     // ===== Operaciones sobre IDs (RR estricto y estado de hijos) =====
     // Asigna un bloque de IDs (máx 10) en estricto round-robin, saltando hijos muertos.
     //   idx: índice lógico del generador [0..nprods-1].

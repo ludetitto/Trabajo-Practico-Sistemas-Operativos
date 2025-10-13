@@ -90,6 +90,6 @@ void generar_randrec(registro_t *r, uint32_t id, int generar_idx)
     r->precio = rand_rango_float(1000.0f, 100000.0f);
     r->stock = (uint32_t)(rand() % 101);
     strftime(buffer_aux, sizeof(buffer_aux), "%Y-%m-%d %H:%M:%S", localtime(&ahora));
-    strcpy(r->timestamp,buffer_aux);
+    strcpy(r->timestamp, buffer_aux);
     r->borrado = 0;
 }
