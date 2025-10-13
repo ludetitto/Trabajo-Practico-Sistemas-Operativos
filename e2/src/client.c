@@ -74,7 +74,12 @@ static int leer_imprimir_respuesta(int fd)
     ssize_t n = leer_linea_sock(fd, buf, sizeof(buf));
     if (n <= 0)
         return -1;
+
     printf("%s\n", buf);
+
+    /* <- NUEVO: si el server dijo BYE, es cierre normal */
+    if (!strcasecmp(buf, "BYE"))
+        return 1; /* señal de cierre limpio */
 
     if (!strncasecmp(buf, "ROW ", 4))
     {
@@ -213,12 +218,17 @@ int main(int argc, char **argv)
         }
         if (pfds[1].revents & POLLIN)
         {
-            /* El server mandó algo (p.ej. respuesta a algo que enviamos antes) */
-            if (leer_imprimir_respuesta(sockfd) < 0)
+            int rr = leer_imprimir_respuesta(sockfd);
+            if (rr < 0)
             {
                 fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
                 close(sockfd);
                 return 1;
+            }
+            if (rr > 0)
+            { /* BYE */
+                close(sockfd);
+                return 0; /* <- salir OK */
             }
             continue;
         }
