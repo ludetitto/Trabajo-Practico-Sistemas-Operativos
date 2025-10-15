@@ -203,21 +203,21 @@ static void *iniciar_thread_cliente(void *arg)
   }
 
   dprintf(cfd,
-          "╔════════════════════════════════════════════════════════════╗\n"
-          "║     Comandos disponibles                                   ║\n"
-          "╠════════════════════════════════════════════════════════════╣\n"
-          "║  PING                                                      ║\n"
-          "║  GET <id>                                                  ║\n"
-          "║  FIND <nombre>                                             ║\n"
-          "║  FIND ALL <nombre>                                         ║\n"
-          "║  ADD nombre= <nombre> precio= <precio> stock= <stock>      ║ \n"
-          "║  UPDATE nombre= <nombre> precio= <precio> stock= <stock>   ║\n"
-          "║  DELETE <id>                                               ║\n"
-          "║  BEGIN TRANSACTION                                         ║\n"
-          "║  COMMIT TRANSACTION                                        ║\n"
-          "║  ROLLBACK TRANSACTION                                      ║\n"
-          "║  QUIT                                                      ║\n"
-          "╚════════════════════════════════════════════════════════════╝\n");
+          "╔═══════════════════════════════════════════════════════════════════╗\n"
+          "║                        Comandos disponibles                       ║\n"
+          "╠═══════════════════════════════════════════════════════════════════╣\n"
+          "║  PING                                                             ║\n"
+          "║  GET <id>                                                         ║\n"
+          "║  FIND <nombre>                                                    ║\n"
+          "║  FIND ALL <nombre>                                                ║\n"
+          "║  ADD nombre=<nombre> precio=<precio> stock=<stock>                ║\n"
+          "║  UPDATE id=<id> nombre=<nombre> precio=<precio> stock=<stock>     ║\n"
+          "║  DELETE <id>                                                      ║\n"
+          "║  BEGIN TRANSACTION                                                ║\n"
+          "║  COMMIT TRANSACTION                                               ║\n"
+          "║  ROLLBACK TRANSACTION                                             ║\n"
+          "║  QUIT                                                             ║\n"
+          "╚═══════════════════════════════════════════════════════════════════╝\n");
 
   char linea[1024];
   int quit = 0;
@@ -270,21 +270,21 @@ static void *iniciar_thread_cliente(void *arg)
     else if (!strncasecmp(linea, "HELP", 4))
     {
       dprintf(cfd,
-              "╔════════════════════════════════════════════════════╗\n"
-              "║                Comandos disponibles:               ║\n"
-              "╠════════════════════════════════════════════════════╣\n"
-              "║  PING                        - Test de conexión    ║\n"
-              "║  GET <id>                    - Buscar por ID       ║\n"
-              "║  FIND <nombre>               - Buscar por nombre   ║\n"
-              "║  FIND ALL <nombre>           - Buscar todos        ║\n"
-              "║  ADD nombre=... precio=...   - Agregar registro    ║\n"
-              "║  UPDATE ...                  - Modificar registro  ║\n"
-              "║  DELETE <id>                 - Eliminar registro   ║\n"
-              "║  BEGIN TRANSACTION           - Iniciar transacción ║\n"
-              "║  COMMIT TRANSACTION          - Confirmar cambios   ║\n"
-              "║  ROLLBACK TRANSACTION        - Deshacer cambios    ║\n"
-              "║  QUIT                        - Salir               ║\n"
-              "╚════════════════════════════════════════════════════╝\n");
+              "╔════════════════════════════════════════════════════════════════════════════════════════╗\n"
+              "║                                 Comandos disponibles:                                  ║\n"
+              "╠════════════════════════════════════════════════════════════════════════════════════════╣\n"
+              "║  PING                                                              - Test de conexión  ║\n"
+              "║  GET <id>                                                          - Buscar por ID     ║\n"
+              "║  FIND <nombre>                                                     - Buscar por nombre ║\n"
+              "║  FIND ALL <nombre>                                                 - Buscar todos      ║\n"
+              "║  ADD nombre=<nombre> precio=<precio> stock=<stock>                 - Agregar registro  ║\n"
+              "║  UPDATE id=<id> nombre=<nombre> precio=<precio> stock=<stock>      - Modificar registro║\n"
+              "║  DELETE <id>                                                       - Eliminar registro ║\n"
+              "║  BEGIN TRANSACTION                                               - Iniciar transacción ║\n"
+              "║  COMMIT TRANSACTION                                              - Confirmar cambios   ║\n"
+              "║  ROLLBACK TRANSACTION                                            - Deshacer cambios    ║\n"
+              "║  QUIT                                                              - Salir             ║\n"
+              "╚════════════════════════════════════════════════════════════════════════════════════════╝\n");
     }
     else if (!strncasecmp(linea, "ROLLBACK TRANSACTION", 20))
     {
