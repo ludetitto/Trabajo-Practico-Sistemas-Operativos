@@ -216,7 +216,7 @@ int main(int argc, char **argv)
             /* server murió o cerró */
             fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
             close(sockfd);
-            /* Enviamos SIGTERM a este mismo proceso para terminar sin quedar colgado */
+            /* nos terminamos inmediatamente */
             kill(getpid(), SIGTERM);
             return 1;
         }

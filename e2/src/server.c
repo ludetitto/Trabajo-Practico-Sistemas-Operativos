@@ -1,3 +1,4 @@
+// server.c
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,19 +41,25 @@ static pthread_mutex_t mx_clients = PTHREAD_MUTEX_INITIALIZER;
 /* Cola dinámica de espera (tamaño = backlog pasado por -m) */
 static int *cola_espera = NULL;
 static int capacidad_espera = 0;
-static int frente_espera = 0, en_espera = 0; // antes, estaba "fin_espera = 0" pero lo quite porque estaba sin usar
+static int frente_espera = 0, en_espera = 0;
 static pthread_cond_t cond_espera = PTHREAD_COND_INITIALIZER;
 
 /* ==== MANEJO DE SEÑALES ==== */
 static void on_signal(int sig)
 {
   (void)sig;
+  /*
+   * Al recibir SIGINT o SIGTERM, cerramos el socket de escucha y
+   * terminamos inmediatamente el proceso. Los clientes verán el cierre
+   * de la conexión y se auto-terminarán.
+   * Usamos _exit porque es async-signal-safe.
+   */
   g_stop = 1;
-  if (g_listen_fd >= 0)
-  {
+  if (g_listen_fd >= 0) {
     close(g_listen_fd);
     g_listen_fd = -1;
   }
+  _exit(EXIT_SUCCESS);
 }
 
 /* ==== TX HELPERS ==== */
@@ -127,7 +134,6 @@ static void *iniciar_thread_cliente(void *arg)
   /* === Admisión y control de espera === */
   pthread_mutex_lock(&mx_clients);
 
-  // si el cupo está lleno y hay lugar en cola
   if (active_clients >= max_clients)
   {
     if (en_espera >= capacidad_espera)
@@ -323,27 +329,13 @@ int main(int argc, char **argv)
   {
     switch (opt)
     {
-    case 'H':
-      host = optarg;
-      break;
-    case 'p':
-      port = atoi(optarg);
-      break;
-    case 'n':
-      max_clients = atoi(optarg);
-      break;
-    case 'm':
-      backlog = atoi(optarg);
-      break;
-    case 'f':
-      csv_path = optarg;
-      break;
-    case 'h':
-      print_usage(argv[0]);
-      return 0;
-    default:
-      print_usage(argv[0]);
-      return 2;
+    case 'H': host = optarg; break;
+    case 'p': port = atoi(optarg); break;
+    case 'n': max_clients = atoi(optarg); break;
+    case 'm': backlog = atoi(optarg); break;
+    case 'f': csv_path = optarg; break;
+    case 'h': print_usage(argv[0]); return 0;
+    default:  print_usage(argv[0]); return 2;
     }
   }
 
