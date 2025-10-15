@@ -347,7 +347,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
 
         int id; char nombre[NOMBRE_MAXLEN]; float precio; int stock;
         registro_t patch = {0};
-        if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) {
+        if (sscanf(pbuf, "id=%d nombre=%63s precio=%f stock=%d", &id, nombre, &precio, &stock) < 4) {
             dprintf(cfd, "ERROR: argumentos inválidos para el comando UPDATE.\n"); return;
         }
 

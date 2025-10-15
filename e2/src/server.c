@@ -364,7 +364,7 @@ int main(int argc, char **argv)
       port = atoi(optarg);
       break;
     case 'n':
-      max_workers = atoi(optarg);
+      max_clients = atoi(optarg); // cantidad de clientes concurrentes
       break;
     case 'm':
       backlog = atoi(optarg);
@@ -455,14 +455,6 @@ int main(int argc, char **argv)
     {
       if (errno == EINTR)
         continue;
-      if (g_stop)
-      {
-        running = 0; /* señal recibida → salir del loop */
-      }
-      else if (errno == EINTR)
-      {
-        /* intentar nuevamente */
-      }
       else
       {
         perror("accept");

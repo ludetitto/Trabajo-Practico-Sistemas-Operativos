@@ -1,6 +1,12 @@
 # Trabajo Práctico – Sistemas Operativos
-Trabajo práctico integrador (UNLaM).
+Trabajo práctico integrador (UNLaM).  
 
+Maria Celeste Torres Moran - 44005719
+Lucia Macarena De Titto - 46501934
+Rocio De Jesus - 44726983
+Francisco Nahuel Vignardel Villagra - 45778667
+Gustavo Gabriel  Ayala Bustos - 44109078
+Martín Palacios - 42932788
 ---
 
 ## Ejercicio 1 — Generador (procesos + SHM)
