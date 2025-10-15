@@ -222,9 +222,8 @@ server: all
 	@echo ">>> Server en 127.0.0.1:5000 usando ../db.csv"
 	@./bin/server -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../db.csv
 
-# Cliente interactivo
 client: all
-	@./bin/client -h 127.0.0.1 -p 5000
+	-@./bin/client -h 127.0.0.1 -p 5000
 
 .PHONY: all clean demo_queue server client
 

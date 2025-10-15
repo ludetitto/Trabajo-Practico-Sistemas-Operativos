@@ -261,7 +261,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     safe_copy(buf, sizeof(buf), linea);
     rstrip(buf);
     pbuf = buf; lskip(&pbuf);
-    if (!*pbuf) { dprintf(cfd, "ERR EMPTY\n"); return; }
+    if (!*pbuf) { dprintf(cfd, "ERROR: la línea recibida está vacía.\n"); return; }
 
     while (pbuf[i] && !isspace((unsigned char)pbuf[i]) && i < (int)sizeof(cmd) - 1) { cmd[i] = pbuf[i]; i++; }
     cmd[i] = 0; upper(cmd); pbuf += i; lskip(&pbuf);
@@ -282,11 +282,10 @@ void procesar_linea_protocolo(int cfd, const char *linea)
     /* ----------- GET <id> ----------- */
     if (!strcmp(cmd, "GET")) {
         int id = atoi(pbuf);
-        if (local_tx_active && local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n"); return; }
         if (!buscar_id_arch(id, &r))
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n", r.id, r.nombre, r.precio, r.stock, r.timestamp);
         else
-            dprintf(cfd, "ERR NOT_FOUND\n");
+            dprintf(cfd, "ERROR: no se encontró el registro solicitado.\n");
         return;
     }
 
@@ -296,9 +295,7 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             pbuf += 3; while (*pbuf && isspace((unsigned char)*pbuf)) pbuf++;
             /* sanitizar argumento */
             char argbuf[1024]; safe_copy(argbuf, sizeof(argbuf), pbuf); trim_and_unquote(argbuf);
-            /* Requiere TX activa y ser dueño */
-            if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-            if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+            // Eliminar chequeo de transacción para FIND ALL
             if (buscar_nombre_todos(argbuf, &vec, &n) != 0) { dprintf(cfd, "END\n"); return; }
             for (size_t k = 0; k < n; ++k)
                 dprintf(cfd, "ROW %d,%s,%.2f,%u,%s\n", vec[k].id, vec[k].nombre, vec[k].precio, vec[k].stock, vec[k].timestamp);
@@ -306,15 +303,12 @@ void procesar_linea_protocolo(int cfd, const char *linea)
             dprintf(cfd, "END\n");
             return;
         }
-        /* Requiere TX activa y ser dueño */
-        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
-        /* sanitizar argumento */
+        // Eliminar chequeo de transacción para FIND
         char argbuf2[1024]; safe_copy(argbuf2, sizeof(argbuf2), pbuf); trim_and_unquote(argbuf2);
         if (buscar_nombre_primero(argbuf2, &r) == 0)
             dprintf(cfd, "RESULT %d,%s,%.2f,%u,%s\n", r.id, r.nombre, r.precio, r.stock, r.timestamp);
         else
-            dprintf(cfd, "ERR NOT_FOUND\n");
+            dprintf(cfd, "ERROR: no se encontró el registro solicitado.\n");
         return;
     }
 
@@ -322,15 +316,15 @@ void procesar_linea_protocolo(int cfd, const char *linea)
 
     /* ----------- ADD ----------- */
     if (!strcmp(cmd, "ADD")) {
-        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+    if (!local_tx_active)      { dprintf(cfd, "ERROR: no hay una transacción activa.\n"); return; }
+    if (local_tx_owner != cfd) { dprintf(cfd, "ERROR: la transacción está siendo utilizada por otro cliente.\n");    return; }
 
         char nombre[NOMBRE_MAXLEN] = {0};
         float precio = -1.0f;
         int stock = -1;
 
         if (parse_add_any(pbuf, nombre, &precio, &stock) != 0) {
-            dprintf(cfd, "ERR ARG\n"); return;
+            dprintf(cfd, "ERROR: argumentos inválidos para el comando ADD.\n"); return;
         }
 
         registro_t nr = {0};
@@ -341,20 +335,20 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         strftime(nr.timestamp, sizeof(nr.timestamp), "%Y-%m-%d %H:%M:%S", localtime(&ahora));
         nr.borrado = false;
 
-        if (!agregar_arch(&nr)) dprintf(cfd, "OK\n");
-        else                    dprintf(cfd, "ERR IO\n");
+    if (!agregar_arch(&nr)) dprintf(cfd, "OK\n");
+    else                    dprintf(cfd, "ERROR: error de entrada/salida al agregar el registro.\n");
         return;
     }
 
     /* ----------- UPDATE id,nombre,precio,stock ----------- */
     if (!strcmp(cmd, "UPDATE")) {
-        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+    if (!local_tx_active)      { dprintf(cfd, "ERROR: no hay una transacción activa.\n"); return; }
+    if (local_tx_owner != cfd) { dprintf(cfd, "ERROR: la transacción está siendo utilizada por otro cliente.\n");    return; }
 
         int id; char nombre[NOMBRE_MAXLEN]; float precio; int stock;
         registro_t patch = {0};
         if (sscanf(pbuf, "%d,%63[^,],%f,%d", &id, nombre, &precio, &stock) < 4) {
-            dprintf(cfd, "ERR ARG\n"); return;
+            dprintf(cfd, "ERROR: argumentos inválidos para el comando UPDATE.\n"); return;
         }
 
         patch.id = id;
@@ -362,27 +356,27 @@ void procesar_linea_protocolo(int cfd, const char *linea)
         patch.precio = precio;
         patch.stock  = stock;
 
-        if (!actualizar_arch(&patch)) dprintf(cfd, "OK\n");
-        else                          dprintf(cfd, "ERR NOT_FOUND\n");
+    if (!actualizar_arch(&patch)) dprintf(cfd, "OK\n");
+    else                          dprintf(cfd, "ERROR: no se encontró el registro a actualizar.\n");
         return;
     }
 
     /* ----------- DELETE <id> ----------- */
     if (!strcmp(cmd, "DELETE")) {
-        if (!local_tx_active)      { dprintf(cfd, "ERR NOT_TX_ACTIVE\n"); return; }
-        if (local_tx_owner != cfd) { dprintf(cfd, "ERR TX_ACTIVE\n");    return; }
+    if (!local_tx_active)      { dprintf(cfd, "ERROR: no hay una transacción activa.\n"); return; }
+    if (local_tx_owner != cfd) { dprintf(cfd, "ERROR: la transacción está siendo utilizada por otro cliente.\n");    return; }
 
     char idbuf[64]; safe_copy(idbuf, sizeof(idbuf), pbuf); trim_and_unquote(idbuf);
     int id = atoi(idbuf);
-        if (id <= 0) { dprintf(cfd, "ERR ARG\n"); return; }
+        if (id <= 0) { dprintf(cfd, "ERROR: el ID proporcionado no es válido.\n"); return; }
 
-        if (!eliminar_arch(id)) dprintf(cfd, "OK\n");
-        else                    dprintf(cfd, "ERR NOT_FOUND\n");
+    if (!eliminar_arch(id)) dprintf(cfd, "OK\n");
+    else                    dprintf(cfd, "ERROR: no se encontró el registro a eliminar.\n");
         return;
     }
 
     /* ----------- QUIT ----------- */
     if (!strcmp(cmd, "QUIT")) { dprintf(cfd, "BYE\n"); return; }
 
-    dprintf(cfd, "ERR CMD\n");
+    dprintf(cfd, "ERROR: comando no reconocido.\n");
 }

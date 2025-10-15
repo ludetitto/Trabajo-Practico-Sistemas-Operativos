@@ -23,22 +23,33 @@ int guardar_snapshot(void);
 int descartar_snapshot(void);
 
 /* ==== ESTADO GLOBAL DE TRANSACCIÓN ==== */
-int csv_fd = -1;   /* FD del CSV para fcntl locks */
-int tx_active = 0; /* ¿hay transacción activa?     */
-int tx_owner = -1; /* socket (cfd) dueño de la TX  */
+int csv_fd = -1;
+int tx_active = 0;
+int tx_owner = -1;
 pthread_mutex_t tx_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-/* ==== CONTROL DE SERVIDOR / SEÑALES ==== */
+/* ==== CONTROL DE SERVIDOR ==== */
 static volatile sig_atomic_t g_stop = 0;
 static int g_listen_fd = -1;
 
+/* ==== CONTROL DE CLIENTES SIMULTÁNEOS ==== */
+static int active_clients = 0;
+static int max_clients = 0;
+static pthread_mutex_t mx_clients = PTHREAD_MUTEX_INITIALIZER;
+
+/* Cola dinámica de espera (tamaño = backlog pasado por -m) */
+static int *cola_espera = NULL;
+static int capacidad_espera = 0;
+static int frente_espera = 0, en_espera = 0; // antes, estaba "fin_espera = 0" pero lo quite porque estaba sin usar
+static pthread_cond_t cond_espera = PTHREAD_COND_INITIALIZER;
+
+/* ==== MANEJO DE SEÑALES ==== */
 static void on_signal(int sig)
 {
   (void)sig;
   g_stop = 1;
   if (g_listen_fd >= 0)
   {
-    /* Cerrar el socket de escucha rompe accept() y nos deja salir ordenado */
     close(g_listen_fd);
     g_listen_fd = -1;
   }
@@ -54,11 +65,7 @@ static int intentar_iniciar_tx(int cfd)
     return -1;
   }
 
-  struct flock lk = {
-      .l_type = F_WRLCK,
-      .l_whence = SEEK_SET,
-      .l_start = 0,
-      .l_len = 0};
+  struct flock lk = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
 
   if (fcntl(csv_fd, F_SETLK, &lk) < 0)
   {
@@ -66,15 +73,9 @@ static int intentar_iniciar_tx(int cfd)
     return -1;
   }
 
-  /* Tras tomar el lock de archivo, crear snapshot in-memory */
   if (generar_snapshot() != 0)
   {
-    struct flock lk2;
-    memset(&lk2, 0, sizeof(lk2));
-    lk2.l_type = F_UNLCK;
-    lk2.l_whence = SEEK_SET;
-    lk2.l_start = 0;
-    lk2.l_len = 0;
+    struct flock lk2 = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
     (void)fcntl(csv_fd, F_SETLK, &lk2);
     pthread_mutex_unlock(&tx_mtx);
     return -1;
@@ -86,20 +87,15 @@ static int intentar_iniciar_tx(int cfd)
   return 0;
 }
 
-/* Cierra la TX (unlock archivo + limpiar flags) SOLO si cfd es el dueño */
 static int finalizar_tx_owner(int cfd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (!tx_active || tx_owner != cfd)
   {
     pthread_mutex_unlock(&tx_mtx);
-    return -1; /* NOT_OWNER o NO_TX */
+    return -1;
   }
-  struct flock lk = {
-      .l_type = F_UNLCK,
-      .l_whence = SEEK_SET,
-      .l_start = 0,
-      .l_len = 0};
+  struct flock lk = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
   (void)fcntl(csv_fd, F_SETLK, &lk);
   tx_active = 0;
   tx_owner = -1;
@@ -107,21 +103,15 @@ static int finalizar_tx_owner(int cfd)
   return 0;
 }
 
-/* Rollback + unlock si el cfd es el dueño (se usa en desconexión y ROLLBACK) */
 static void rollback_valido(int cfd)
 {
   pthread_mutex_lock(&tx_mtx);
   if (tx_active && tx_owner == cfd)
   {
-    pthread_mutex_unlock(&tx_mtx); /* liberar para no anidar mientras llamamos a csvdb */
-    (void)descartar_snapshot();    /* revertir snapshot (ignorar error) */
+    pthread_mutex_unlock(&tx_mtx);
+    (void)descartar_snapshot();
     pthread_mutex_lock(&tx_mtx);
-    struct flock fl;
-    memset(&fl, 0, sizeof(fl));
-    fl.l_type = F_UNLCK;
-    fl.l_whence = SEEK_SET;
-    fl.l_start = 0;
-    fl.l_len = 0;
+    struct flock fl = {.l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
     (void)fcntl(csv_fd, F_SETLK, &fl);
     tx_active = 0;
     tx_owner = -1;
@@ -133,32 +123,77 @@ static void rollback_valido(int cfd)
 static void *iniciar_thread_cliente(void *arg)
 {
   int cfd = (int)(intptr_t)arg;
+
+  /* === Admisión y control de espera === */
+  pthread_mutex_lock(&mx_clients);
+
+  // si el cupo está lleno y hay lugar en cola
+  if (active_clients >= max_clients)
+  {
+    if (en_espera >= capacidad_espera)
+    {
+      pthread_mutex_unlock(&mx_clients);
+      dprintf(cfd, "ERR BUSY\n");
+      close(cfd);
+      return NULL;
+    }
+
+    en_espera++;
+    int pos = en_espera;
+    dprintf(cfd, "En espera de disponibilidad del servidor... (%d/%d)\n",
+            pos, capacidad_espera);
+    fprintf(stdout, "[SRV] Cliente agregado a espera (%d/%d)\n", en_espera, capacidad_espera);
+    fflush(stdout);
+
+    while (active_clients >= max_clients || frente_espera != 0)
+      pthread_cond_wait(&cond_espera, &mx_clients);
+
+    en_espera--;
+  }
+
+  active_clients++;
+  fprintf(stdout, "[SRV] Cliente aceptado. Activos=%d, Espera=%d/%d\n",
+          active_clients, en_espera, capacidad_espera);
+  pthread_mutex_unlock(&mx_clients);
+
+  /* === Lógica normal === */
   FILE *arch = fdopen(dup(cfd), "r");
   if (!arch)
   {
     close(cfd);
+    pthread_mutex_lock(&mx_clients);
+    active_clients--;
+    pthread_cond_broadcast(&cond_espera);
+    pthread_mutex_unlock(&mx_clients);
     return NULL;
   }
 
   dprintf(cfd,
-          "Conectado. Comandos: PING |\n"
-          "GET <id> | FIND <nombre> | FIND ALL <nombre> |\n"
-          "ADD ... | UPDATE ... | DELETE <id> |\n"
-          "BEGIN | COMMIT | ROLLBACK | QUIT\n");
+          "╔════════════════════════════════════════════════════════════╗\n"
+          "║     Comandos disponibles                                   ║\n"
+          "╠════════════════════════════════════════════════════════════╣\n"
+          "║  PING                                                      ║\n"
+          "║  GET <id>                                                  ║\n"
+          "║  FIND <nombre>                                             ║\n"
+          "║  FIND ALL <nombre>                                         ║\n"
+          "║  ADD nombre= <nombre> precio= <precio> stock= <stock>      ║ \n"
+          "║  UPDATE nombre= <nombre> precio= <precio> stock= <stock>   ║\n"
+          "║  DELETE <id>                                               ║\n"
+          "║  BEGIN TRANSACTION                                         ║\n"
+          "║  COMMIT TRANSACTION                                        ║\n"
+          "║  ROLLBACK TRANSACTION                                      ║\n"
+          "║  QUIT                                                      ║\n"
+          "╚════════════════════════════════════════════════════════════╝\n");
 
   char linea[1024];
   int quit = 0;
 
   while (!quit && fgets(linea, sizeof(linea), arch))
   {
-    /* Normalizar fin de línea */
     size_t L = strlen(linea);
     if (L && (linea[L - 1] == '\n' || linea[L - 1] == '\r'))
-    {
       linea[L - 1] = '\0';
-    }
 
-    /* Sin break/continue: if/else encadenado */
     if (!strncasecmp(linea, "QUIT", 4))
     {
       dprintf(cfd, "BYE\n");
@@ -168,18 +203,11 @@ static void *iniciar_thread_cliente(void *arg)
     {
       dprintf(cfd, "OK\n");
     }
-    else if (!strncasecmp(linea, "BEGIN", 5))
+    else if (!strncasecmp(linea, "BEGIN TRANSACTION", 17))
     {
-      if (intentar_iniciar_tx(cfd) == 0)
-      {
-        dprintf(cfd, "OK\n");
-      }
-      else
-      {
-        dprintf(cfd, "ERR TX_ACTIVE\n");
-      }
+      dprintf(cfd, intentar_iniciar_tx(cfd) == 0 ? "OK\n" : "ERR TX_ACTIVE\n");
     }
-    else if (!strncasecmp(linea, "COMMIT", 6))
+    else if (!strncasecmp(linea, "COMMIT TRANSACTION", 18))
     {
       int es_duenio;
       pthread_mutex_lock(&tx_mtx);
@@ -188,31 +216,43 @@ static void *iniciar_thread_cliente(void *arg)
 
       if (es_duenio)
       {
-        int rc = guardar_snapshot(); /* persistir cambios */
+        int rc = guardar_snapshot();
         if (rc == 0)
         {
           if (finalizar_tx_owner(cfd) == 0)
-          {
             dprintf(cfd, "OK\n");
-          }
           else
-          {
             dprintf(cfd, "ERR NOT_OWNER_OR_NO_TX\n");
-          }
         }
         else
         {
-          /* si falla persistencia, revertimos */
           rollback_valido(cfd);
           dprintf(cfd, "ERR COMMIT_FAILED\n");
         }
       }
       else
-      {
         dprintf(cfd, "ERR NOT_OWNER_OR_NO_TX\n");
-      }
     }
-    else if (!strncasecmp(linea, "ROLLBACK", 8))
+    else if (!strncasecmp(linea, "HELP", 4))
+    {
+      dprintf(cfd,
+              "╔════════════════════════════════════════════════════╗\n"
+              "║                Comandos disponibles:               ║\n"
+              "╠════════════════════════════════════════════════════╣\n"
+              "║  PING                        - Test de conexión    ║\n"
+              "║  GET <id>                    - Buscar por ID       ║\n"
+              "║  FIND <nombre>               - Buscar por nombre   ║\n"
+              "║  FIND ALL <nombre>           - Buscar todos        ║\n"
+              "║  ADD nombre=... precio=...   - Agregar registro    ║\n"
+              "║  UPDATE ...                  - Modificar registro  ║\n"
+              "║  DELETE <id>                 - Eliminar registro   ║\n"
+              "║  BEGIN TRANSACTION           - Iniciar transacción ║\n"
+              "║  COMMIT TRANSACTION          - Confirmar cambios   ║\n"
+              "║  ROLLBACK TRANSACTION        - Deshacer cambios    ║\n"
+              "║  QUIT                        - Salir               ║\n"
+              "╚════════════════════════════════════════════════════╝\n");
+    }
+    else if (!strncasecmp(linea, "ROLLBACK TRANSACTION", 20))
     {
       int es_duenio;
       pthread_mutex_lock(&tx_mtx);
@@ -223,53 +263,44 @@ static void *iniciar_thread_cliente(void *arg)
       {
         int rc = descartar_snapshot();
         rollback_valido(cfd);
-        if (rc == 0)
-        {
-          dprintf(cfd, "OK\n");
-        }
-        else
-        {
-          dprintf(cfd, "ERR ROLLBACK_FAILED\n");
-        }
+        dprintf(cfd, rc == 0 ? "OK\n" : "ERR ROLLBACK_FAILED\n");
       }
       else
-      {
         dprintf(cfd, "ERR NOT_OWNER_OR_NO_TX\n");
-      }
     }
     else
     {
-      /* Si hay transacción activa y NO soy el dueño => denegar */
+      int es_find = !strncasecmp(linea, "FIND", 4);
+      int es_get = !strncasecmp(linea, "GET", 3);
       int denegar;
       pthread_mutex_lock(&tx_mtx);
-      denegar = (tx_active && tx_owner != cfd);
+      denegar = (tx_active && tx_owner != cfd && !es_find && !es_get);
       pthread_mutex_unlock(&tx_mtx);
-
       if (!denegar)
-      {
         procesar_linea_protocolo(cfd, linea);
-      }
       else
-      {
         dprintf(cfd, "ERR TX_ACTIVE\n");
-      }
     }
   }
 
-  /* Si salimos por EOF/desconexión y éramos dueños de TX → rollback + unlock */
   rollback_valido(cfd);
-
   if (arch)
     fclose(arch);
   close(cfd);
+
+  pthread_mutex_lock(&mx_clients);
+  active_clients--;
+  pthread_cond_signal(&cond_espera); /* libera un slot para quien espera */
+  fprintf(stdout, "[SRV] Cliente desconectado. Activos ahora: %d\n", active_clients);
+  pthread_mutex_unlock(&mx_clients);
   return NULL;
 }
 
-/* ==== USO / PARSING ==== */
+/* ==== USO ==== */
 static void print_usage(const char *prog)
 {
   fprintf(stderr,
-          "Uso: %s -H <host> -p <puerto> -n <hilos> -m <backlog> -f <archivo.csv>\n"
+          "Uso: %s -H <host> -p <puerto> -n <clientes> -m <backlog> -f <archivo.csv>\n"
           "Ejemplo: %s -H 127.0.0.1 -p 5000 -n 4 -m 16 -f ../productos.csv\n",
           prog, prog);
 }
@@ -277,21 +308,16 @@ static void print_usage(const char *prog)
 /* ==== MAIN ==== */
 int main(int argc, char **argv)
 {
-  const char *host = NULL;
-  const char *csv_path = NULL;
-  int port = 0, max_workers = 0, backlog = 0;
+  const char *host = NULL, *csv_path = NULL;
+  int port = 0, backlog = 0;
 
-  /* Señales: salir ordenado y evitar abort por writes a sockets cerrados */
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
+  struct sigaction sa = {0};
   sa.sa_handler = on_signal;
   sigemptyset(&sa.sa_mask);
-  sa.sa_flags = 0;
   sigaction(SIGINT, &sa, NULL);
   sigaction(SIGTERM, &sa, NULL);
   signal(SIGPIPE, SIG_IGN);
 
-  /* Parsing simple con getopt */
   int opt;
   while ((opt = getopt(argc, argv, "H:p:n:m:f:h")) != -1)
   {
@@ -304,7 +330,7 @@ int main(int argc, char **argv)
       port = atoi(optarg);
       break;
     case 'n':
-      max_workers = atoi(optarg);
+      max_clients = atoi(optarg);
       break;
     case 'm':
       backlog = atoi(optarg);
@@ -321,35 +347,22 @@ int main(int argc, char **argv)
     }
   }
 
-  if (!host || port <= 0 || max_workers <= 0 || backlog <= 0 || !csv_path)
+  if (!host || port <= 0 || max_clients <= 0 || backlog <= 0 || !csv_path)
   {
     fprintf(stderr, "Error: parámetros inválidos o faltantes.\n");
     print_usage(argv[0]);
     return 2;
   }
 
-  /* Asegurar carpeta de logs y redirigir stdout/stderr a un logfile específico */
+  /* Crear cola dinámica según backlog */
+  capacidad_espera = backlog;
+  cola_espera = calloc((size_t)capacidad_espera, sizeof(int));
+  if (!cola_espera)
   {
-    (void)mkdir("logs", 0755);
-    char logpath[512];
-    snprintf(logpath, sizeof(logpath), "logs/server_%d.log", port);
-    int lf = open(logpath, O_CREAT | O_WRONLY | O_APPEND, 0644);
-    if (lf >= 0) {
-      /* duplicar stdout/stderr al logfile */
-      (void)dup2(lf, STDOUT_FILENO);
-      (void)dup2(lf, STDERR_FILENO);
-      /* keep original fd open until exit */
-    }
+    fprintf(stderr, "Error: no se pudo reservar memoria para cola de espera (%d)\n",
+            capacidad_espera);
+    return 1;
   }
-
-  /* Validar que el CSV existe/abre para lectura al menos */
-  FILE *csv_chk = fopen(csv_path, "r");
-  if (!csv_chk)
-  {
-    fprintf(stderr, "Error: no puedo abrir CSV '%s': %s\n", csv_path, strerror(errno));
-    return 2;
-  }
-  fclose(csv_chk);
 
   if (abrir_arch(csv_path) < 0)
   {
@@ -374,10 +387,9 @@ int main(int argc, char **argv)
   }
 
   int optval = 1;
-  (void)setsockopt(g_listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+  setsockopt(g_listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
-  struct sockaddr_in sa_listen;
-  memset(&sa_listen, 0, sizeof(sa_listen));
+  struct sockaddr_in sa_listen = {0};
   sa_listen.sin_family = AF_INET;
   sa_listen.sin_port = htons((uint16_t)port);
   sa_listen.sin_addr.s_addr = inet_addr(host);
@@ -386,7 +398,6 @@ int main(int argc, char **argv)
   {
     perror("bind");
     close(g_listen_fd);
-    g_listen_fd = -1;
     close(csv_fd);
     cerrar_arch();
     return 1;
@@ -396,60 +407,49 @@ int main(int argc, char **argv)
   {
     perror("listen");
     close(g_listen_fd);
-    g_listen_fd = -1;
-    close(csv_fd);
-    cerrar_arch();
-    return 1;
+    exit(EXIT_FAILURE);
   }
 
-  printf("Servidor escuchando en %s:%d (threads=%d, backlog=%d) CSV=%s\n",
-         host, port, max_workers, backlog, csv_path);
+  fprintf(stdout, "[SRV] Escuchando en %s:%d (max activos=%d, backlog=%d)\n",
+          host, port, max_clients, backlog);
+  fflush(stdout);
 
-  /* Loop principal de aceptación sin break/continue */
-  int running = 1;
-  while (!g_stop && running)
+  while (!g_stop)
   {
     int cfd = accept(g_listen_fd, NULL, NULL);
-    if (cfd >= 0)
+    if (cfd < 0)
     {
-      pthread_t th;
-      (void)pthread_create(&th, NULL, iniciar_thread_cliente, (void *)(intptr_t)cfd);
-      (void)pthread_detach(th);
-    }
-    else
-    {
-      /* error en accept */
+      if (errno == EINTR)
+        continue;
       if (g_stop)
-      {
-        running = 0; /* señal recibida → salir del loop */
-      }
-      else if (errno == EINTR)
-      {
-        /* intentar nuevamente */
-      }
-      else
-      {
-        perror("accept");
-        /* mantener el servidor vivo */
-      }
+        break;
+      perror("accept");
+      continue;
     }
+
+    pthread_t th;
+    pthread_create(&th, NULL, iniciar_thread_cliente, (void *)(intptr_t)cfd);
+    pthread_detach(th);
   }
 
-  /* Salida ordenada del servidor */
   if (g_listen_fd >= 0)
   {
     close(g_listen_fd);
     g_listen_fd = -1;
   }
 
-  /* Si queda una TX activa (raro), hacer rollback y unlock */
   rollback_valido(tx_owner);
-
   cerrar_arch();
   if (csv_fd >= 0)
-  {
     close(csv_fd);
-    csv_fd = -1;
+
+  if (cola_espera)
+  {
+    free(cola_espera);
+    cola_espera = NULL;
   }
+  fprintf(stdout, "[SRV] Servidor detenido.\n");
   return 0;
 }
+
+/* ==== FIN DE server.c ==== */
