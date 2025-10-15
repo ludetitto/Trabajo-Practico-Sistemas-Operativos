@@ -55,10 +55,38 @@ static void on_signal(int sig)
    * Usamos _exit porque es async-signal-safe.
    */
   g_stop = 1;
-  if (g_listen_fd >= 0) {
+  if (g_listen_fd >= 0)
+  {
+    /* Cerrar el socket de escucha rompe accept() y nos deja salir ordenado */
     close(g_listen_fd);
     g_listen_fd = -1;
   }
+
+  // CRÍTICO: Hacer rollback de transacción activa
+  pthread_mutex_lock(&tx_mtx);
+  if (tx_active)
+  {
+    fprintf(stderr, "[SRV] Señal recibida con TX activa - haciendo rollback automático\n");
+
+    // Descartar snapshot (operación async-signal-safe)
+    (void)descartar_snapshot();
+
+    // Liberar lock del archivo
+    if (csv_fd >= 0)
+    {
+      struct flock fl = {
+          .l_type = F_UNLCK,
+          .l_whence = SEEK_SET,
+          .l_start = 0,
+          .l_len = 0};
+      (void)fcntl(csv_fd, F_SETLK, &fl);
+    }
+
+    tx_active = 0;
+    tx_owner = -1;
+  }
+  pthread_mutex_unlock(&tx_mtx);
+
   _exit(EXIT_SUCCESS);
 }
 
@@ -329,13 +357,27 @@ int main(int argc, char **argv)
   {
     switch (opt)
     {
-    case 'H': host = optarg; break;
-    case 'p': port = atoi(optarg); break;
-    case 'n': max_clients = atoi(optarg); break;
-    case 'm': backlog = atoi(optarg); break;
-    case 'f': csv_path = optarg; break;
-    case 'h': print_usage(argv[0]); return 0;
-    default:  print_usage(argv[0]); return 2;
+    case 'H':
+      host = optarg;
+      break;
+    case 'p':
+      port = atoi(optarg);
+      break;
+    case 'n':
+      max_workers = atoi(optarg);
+      break;
+    case 'm':
+      backlog = atoi(optarg);
+      break;
+    case 'f':
+      csv_path = optarg;
+      break;
+    case 'h':
+      print_usage(argv[0]);
+      return 0;
+    default:
+      print_usage(argv[0]);
+      return 2;
     }
   }
 
@@ -414,7 +456,20 @@ int main(int argc, char **argv)
       if (errno == EINTR)
         continue;
       if (g_stop)
-        break;
+      {
+        running = 0; /* señal recibida → salir del loop */
+      }
+      else if (errno == EINTR)
+      {
+        /* intentar nuevamente */
+      }
+      else
+      {
+        perror("accept");
+        /* mantener el servidor vivo */
+      }
+      if (errno == EINTR || g_stop)
+        break; /* Salir del loop limpiamente */
       perror("accept");
       continue;
     }
