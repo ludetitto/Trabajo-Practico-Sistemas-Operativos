@@ -59,6 +59,31 @@ static void on_signal(int sig)
     close(g_listen_fd);
     g_listen_fd = -1;
   }
+
+  // CRÍTICO: Hacer rollback de transacción activa
+  pthread_mutex_lock(&tx_mtx);
+  if (tx_active) {
+    fprintf(stderr, "[SRV] Señal recibida con TX activa - haciendo rollback automático\n");
+    
+    // Descartar snapshot (operación async-signal-safe)
+    (void)descartar_snapshot();
+    
+    // Liberar lock del archivo
+    if (csv_fd >= 0) {
+      struct flock fl = {
+        .l_type = F_UNLCK, 
+        .l_whence = SEEK_SET, 
+        .l_start = 0, 
+        .l_len = 0
+      };
+      (void)fcntl(csv_fd, F_SETLK, &fl);
+    }
+    
+    tx_active = 0;
+    tx_owner = -1;
+  }
+  pthread_mutex_unlock(&tx_mtx);
+
   _exit(EXIT_SUCCESS);
 }
 
@@ -414,7 +439,20 @@ int main(int argc, char **argv)
       if (errno == EINTR)
         continue;
       if (g_stop)
-        break;
+      {
+        running = 0; /* señal recibida → salir del loop */
+      }
+      else if (errno == EINTR)
+      {
+        /* intentar nuevamente */
+      }
+      else
+      {
+        perror("accept");
+        /* mantener el servidor vivo */
+      }
+      if (errno == EINTR || g_stop)
+        break;  /* Salir del loop limpiamente */
       perror("accept");
       continue;
     }
