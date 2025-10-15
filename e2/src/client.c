@@ -67,7 +67,12 @@ static ssize_t leer_linea_sock(int fd, char *buf, size_t cap)
     return (ssize_t)i;
 }
 
-/* imprime respuesta; si empieza con ROW, consume hasta END */
+/* imprime respuesta; si empieza con ROW, consume hasta END.
+   Devuelve:
+     1  -> server dijo BYE (cierre limpio)
+     0  -> OK, seguir
+    -1  -> error/corte remoto
+*/
 static int leer_imprimir_respuesta(int fd)
 {
     char buf[1024];
@@ -77,9 +82,8 @@ static int leer_imprimir_respuesta(int fd)
 
     printf("%s\n", buf);
 
-    /* <- NUEVO: si el server dijo BYE, es cierre normal */
     if (!strcasecmp(buf, "BYE"))
-        return 1; /* señal de cierre limpio */
+        return 1; /* cierre limpio */
 
     if (!strncasecmp(buf, "ROW ", 4))
     {
@@ -122,7 +126,7 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
-    /* parse -H/-p (acepto -h como alias de -H por compatibilidad) */
+    /* parse -H/-p (acepto -h como alias de -H) */
     for (int i = 1; i < argc; i++)
     {
         if ((!strcmp(argv[i], "-H") || !strcmp(argv[i], "-h")) && i + 1 < argc)
@@ -165,18 +169,18 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Poll: monitorear STDIN y el socket para detectar caída del server aun en idle */
+    /* Poll: monitorear STDIN y socket para detectar caída del server aun en idle */
     struct pollfd pfds[2];
     pfds[0].fd = 0;
     pfds[0].events = POLLIN; /* STDIN */
     pfds[1].fd = sockfd;
-    pfds[1].events = POLLIN | POLLERR | POLLHUP;
+    /* IMPORTANTE: incluir POLLNVAL para detectar cierre por SIGTERM del server */
+    pfds[1].events = POLLIN | POLLERR | POLLHUP | POLLNVAL;
 
     char linea[1024];
     int client_tx_active = 0;
 
-    int running = 1;
-    while (running)
+    while (1)
     {
         /* 2do Ctrl+C = salir ya */
         if (g_sigint_count >= 2)
@@ -191,10 +195,8 @@ int main(int argc, char **argv)
             {
                 (void)escribir_todo(sockfd, "ROLLBACK\n", 9);
                 client_tx_active = 0;
-                /* respuesta opcional: (void)leer_imprimir_respuesta(sockfd); */
             }
             (void)escribir_todo(sockfd, "QUIT\n", 5);
-            /* opcional: (void)leer_imprimir_respuesta(sockfd); */
             close(sockfd);
             return 130;
         }
@@ -209,11 +211,13 @@ int main(int argc, char **argv)
         }
 
         /* 1) Evento en socket: mensajes / caída del server */
-        if (pfds[1].revents & (POLLERR | POLLHUP))
+        if (pfds[1].revents & (POLLERR | POLLHUP | POLLNVAL))
         {
             /* server murió o cerró */
             fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
             close(sockfd);
+            /* Enviamos SIGTERM a este mismo proceso para terminar sin quedar colgado */
+            kill(getpid(), SIGTERM);
             return 1;
         }
         if (pfds[1].revents & POLLIN)
@@ -223,12 +227,13 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "\n[CLIENTE] Conexión cerrada por el servidor.\n");
                 close(sockfd);
+                kill(getpid(), SIGTERM);
                 return 1;
             }
             if (rr > 0)
             { /* BYE */
                 close(sockfd);
-                return 0; /* <- salir OK */
+                return 0; /* salir OK */
             }
             continue;
         }
@@ -259,6 +264,7 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "\n[CLIENTE] Error escribiendo al servidor (%s).\n", strerror(errno));
                 close(sockfd);
+                kill(getpid(), SIGTERM);
                 return 1;
             }
             /* No mostrar prompt aquí, solo tras respuesta del server */
